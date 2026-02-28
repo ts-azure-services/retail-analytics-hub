@@ -12,6 +12,17 @@ This project simulates retail operations across three domains:
 
 The simulation generates realistic operational data that can be used to train ML models for predictions like conversion probability, stockout risk, and customer churn.
 
+## Conceptual Flow
+
+The project follows a closed-loop workflow for tuning simulation assumptions:
+
+1. **Model** — Define workflows (omnichannel, inventory, engagement) with discrete-event simulation logic
+2. **Configure** — All assumptions live centrally in `config.py` dataclasses (zero hardcoded values in workflow files), cleanly organized per workflow
+3. **Sweep** — Systematically vary those assumptions across parameter grids to find which produce the richest, most realistic data
+4. **Recommend + Apply** — Score sweep results by volume, variety, and KPI realism; generate recommendations; and write them back to `config_overrides.json` so future runs use tuned values
+
+This loop is extensible: if a workflow model changes and introduces new assumptions, you add the fields to the relevant config dataclass, reference them in the workflow, optionally add them to a sweep config, and the same sweep → recommend → apply pipeline handles the rest.
+
 ## Architecture
 
 ```
@@ -234,52 +245,9 @@ class DistributionConfig:
 - Python 3.11+
 - uv (Python package manager)
 
-### Setup
+### Getting Started
 
-```bash
-# Install dependencies
-uv sync
-
-# Seed local DuckDB databases
-make seed-local
-
-# Run a quick test simulation
-make run-simulation-quick
-```
-
-### Running Simulations
-
-```bash
-# Run individual workflows
-make run-omnichannel HOURS=2
-make run-inventory-workflow HOURS=2
-make run-engagement-workflow HOURS=2
-
-# Run all workflows together
-make run-all-workflows HOURS=1
-```
-
-### Running Sweeps
-
-```bash
-# Run a parameter sweep (generates ML training data)
-make run-sweep-conversion
-
-# See all available sweep commands
-make help
-```
-
-### Training Models
-
-```bash
-# Train all models
-make train-models
-
-# Train models for specific workflow
-make train-models-omnichannel
-make train-models-inventory
-make train-models-engagement
-```
+Install dependencies with `uv sync`, then seed the local DuckDB database. From there you can run individual workflows, full sweeps, or the ML training pipeline. Run `make help` to see all available commands organized by category.
 
 ## Project Structure
 
@@ -295,10 +263,110 @@ make train-models-engagement
 │   ├── sweep/              # Parameter sweeps
 │   └── ml/                 # ML models
 ├── analysis/               # Analysis scripts
-│   └── train_models.py     # Model training CLI
+│   ├── train_models.py     # Model training CLI
+│   ├── sweep_report.py     # Sweep volume/variety/KPI report
+│   ├── sweep_recommend.py  # Recommendation engine (scores & ranks)
+│   └── config_applier.py   # Preview/apply recommendations to config
 ├── models/                 # Saved model files (gitignored)
 └── local_postgres.duckdb   # Local database (gitignored)
 ```
+
+## Sweep Reporting
+
+After running sweeps, use the sweep report to see which parameter combinations produced the most volume and variety of data — useful for understanding which scenarios generate the richest ML training datasets.
+
+### What the Report Shows
+
+Each sweep gets three ranked tables:
+
+| Section | What it ranks | Why it matters |
+|---------|--------------|----------------|
+| **Data Volume** | Scenarios by total rows across detail tables (customer_journeys, inventory_events, etc.) | Higher volume = more training examples for ML |
+| **Data Variety** | Scenarios by distinct values (channels, outcome types, event types, segments) | Higher variety = better model generalization |
+| **Primary KPI** | Scenarios by the key business metric (revenue, fill rate, CLV) | Identifies which parameter combos drive the most interesting outcomes |
+
+### Example Output
+
+```
+================================================================================
+  SWEEP DATA OVERVIEW
+================================================================================
+  Sweep                          Workflow        Scenarios  Completed  Last Run
+  ------------------------------ -------------- ---------- ----------  -------------------
+  demand                         omnichannel            36         36  2026-02-27 14:45:58
+  conversion                     omnichannel            36         36  2026-02-27 12:28:14
+  engagement_loyalty             engagement             27         27  2026-02-26 23:54:31
+  ...
+
+================================================================================
+  SWEEP: DEMAND  (omnichannel)
+================================================================================
+
+  Detail table row counts (total: 56,050):
+    customer_journeys                  53,810 rows
+    order_metrics                           0 rows
+    hourly_demand                       2,240 rows
+
+  TOP 10 SCENARIOS BY DATA VOLUME:
+  #    Scenario                       Total Rows   Tables  Parameters
+  ---- ---------------------------- ------------ --------  ----------------------------------------
+  1    demand_0033                         2,829        2  arrival_rate_online=50, arrival_rate_in_store=25, ...
+  2    demand_0034                         2,785        2  arrival_rate_online=50, arrival_rate_in_store=25, ...
+  ...
+```
+
+### Current Observations
+
+Based on sweep runs to date:
+
+- **Omnichannel sweeps** produce good customer journey volume (53K–62K rows per sweep) but `order_metrics` shows 0 rows and revenue is $0 — the order completion path is not fully wired in sweep mode
+- **Inventory sweeps** show 0 rows in all detail tables (`inventory_events`, `supplier_deliveries`, `inventory_snapshots`) — `persist_ml_data` is not yet writing to those tables
+- **Engagement sweeps** populate `customer_snapshots` and `campaign_interactions` but not `engagement_events`
+- The **demand sweep** with `arrival_rate_online=50, arrival_rate_in_store=25` consistently produces the highest per-scenario volume (~2,800 rows)
+- Variety scores are fairly uniform within a sweep — most scenarios hit all 3 channels and 24 hours; the differentiators are abandonment reason diversity and outcome type spread
+
+## Centralized Assumptions
+
+All simulation assumptions are defined as dataclasses in `shared/config.py` — no hardcoded values exist in workflow files. Each workflow has its own assumptions section:
+
+| Section | Fields | Examples |
+|---------|--------|----------|
+| `OmnichannelAssumptions` | 21 | checkout times, payment methods, carriers, queue balk thresholds |
+| `InventoryAssumptions` | 23 | reorder points, lead times, shrinkage rate, audit params |
+| `EngagementAssumptions` | 60 | value tier thresholds, campaign response rates, churn risk weights, loyalty program params |
+
+These sit alongside the existing `DistributionConfig`, `ResourceConfig`, and `SLAConfig` sections inside `SimulationConfig`. Sweeps override these values per-scenario via a generic mechanism that searches all config sections automatically.
+
+### Config Overrides
+
+After running the recommendation pipeline, tuned values are stored in `config_overrides.json` at the project root. This file is auto-loaded by `SimulationConfig.__post_init__`, so all subsequent simulation runs pick up the tuned values without any code changes.
+
+```json
+{
+  "engagement": {
+    "base_email_response_rate": 0.08,
+    "points_per_dollar": 12.0
+  },
+  "distributions": {
+    "abandonment_rate_online": 0.20
+  }
+}
+```
+
+## Sweep Recommendations
+
+After running sweeps and reviewing the sweep report, use the recommendation pipeline to automatically tune assumptions.
+
+### How It Works
+
+1. **Score** — Each scenario is scored by a weighted composite: volume (0.3) + variety (0.3) + KPI realism (0.4)
+2. **Rank** — Top scenarios per sweep are identified
+3. **Analyze convergence** — For each parameter, if top scenarios agree on a value it becomes a fixed recommendation; if they span diverse values it becomes a range recommendation (for data variety)
+4. **Output** — A human-readable report and `recommendations.json`
+
+### End-to-End Flow
+
+Run one or more sweeps, then generate recommendations from the results. Preview the proposed changes against current defaults to see exactly what would shift. When satisfied, apply the recommendations — this writes `config_overrides.json`, which is automatically loaded on subsequent simulation runs. See `make help` for the specific commands at each step.
 
 ## Key Concepts
 
@@ -364,6 +432,13 @@ MY_SWEEP = SweepConfig(
 2. Add to exports in `sweep/__init__.py`
 3. Map to workflow in `sweep_runner.py`
 4. Add Makefile target
+
+### Adding a New Assumption
+
+1. Add the field to the relevant dataclass in `shared/config.py` (e.g. `EngagementAssumptions`)
+2. Reference it in the workflow code (e.g. `self.config.engagement.new_field`)
+3. Optionally add it to a sweep config in `sweep/config_generator.py` — the generic `_apply_overrides` in `sweep_runner.py` will pick it up automatically
+4. Run the sweep → recommend → apply pipeline to tune it
 
 ### Adding a New ML Model
 

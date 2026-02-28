@@ -295,7 +295,8 @@ class OmnichannelPurchaseWorkflow:
         )
         
         # Simulate picking up items during browsing (sensor events)
-        num_pickups = random.randint(3, 8)
+        oc = self.config.omnichannel
+        num_pickups = random.randint(oc.item_pickups_min, oc.item_pickups_max)
         for _ in range(num_pickups):
             yield self.env.timeout(browsing_time / num_pickups)
             if self.product_catalog:
@@ -327,8 +328,8 @@ class OmnichannelPurchaseWorkflow:
         
         # Check queue length - may balk if too long
         queue_length = len(checkout_resource.queue)
-        if queue_length > 10:  # Arbitrary threshold
-            if random.random() < 0.3:  # 30% chance to balk
+        if queue_length > oc.queue_balk_threshold:
+            if random.random() < oc.queue_balk_probability:
                 self.metrics.record_abandonment(customer_id, "queue_too_long")
                 logger.debug(f"[{self.env.now:.2f}] {customer_id} balked due to long queue")
                 return
@@ -383,27 +384,28 @@ class OmnichannelPurchaseWorkflow:
         # Session start
         self._emit_interaction_event(
             customer_id, session_id, 'session_start',
-            {'channel': 'web', 'referrer': random.choice(['google', 'direct', 'email', 'social'])}
+            {'channel': 'web', 'referrer': random.choice(self.config.omnichannel.web_referrers)}
         )
-        
+
         # 1. BROWSING with page views and searches
+        oc = self.config.omnichannel
         browsing_time = random.triangular(
             self.config.distributions.browsing_time_min,
             self.config.distributions.browsing_time_mode,
             self.config.distributions.browsing_time_max
         )
-        
+
         # Simulate page views
-        num_pages = random.randint(2, 8)
+        num_pages = random.randint(oc.online_pages_min, oc.online_pages_max)
         for i in range(num_pages):
             yield self.env.timeout(browsing_time / num_pages)
-            page_type = random.choice(['category', 'product_detail', 'search'])
+            page_type = random.choice(oc.page_types)
             
             if page_type == 'search':
                 self._emit_interaction_event(
                     customer_id, session_id, 'search',
                     {'query': f"search_term_{random.randint(1, 100)}", 
-                     'results_count': random.randint(5, 50)}
+                     'results_count': random.randint(oc.search_results_min, oc.search_results_max)}
                 )
             else:
                 viewed_sku = random.choice(list(self.product_catalog.keys())) if i > 0 and self.product_catalog else None
@@ -437,7 +439,7 @@ class OmnichannelPurchaseWorkflow:
             return
         
         # 3. CHECKOUT (no queue for online)
-        checkout_time = random.uniform(1.0, 3.0)  # Quick online checkout
+        checkout_time = random.uniform(oc.online_checkout_time_min, oc.online_checkout_time_max)
         yield self.env.timeout(checkout_time)
         
         total_amount = sum([item['price'] * item['quantity'] for item in basket])
@@ -498,7 +500,7 @@ class OmnichannelPurchaseWorkflow:
             return
         
         # 3. CHECKOUT & SELECT PICKUP STORE
-        checkout_time = random.uniform(1.0, 3.0)
+        checkout_time = random.uniform(self.config.omnichannel.bopis_checkout_time_min, self.config.omnichannel.bopis_checkout_time_max)
         yield self.env.timeout(checkout_time)
         
         pickup_store = random.choice([loc for loc in self.config.resources.locations if loc.startswith("STORE-")])
@@ -644,7 +646,7 @@ class OmnichannelPurchaseWorkflow:
             return False, None
         
         # 4. Create order header with payment_status='pending'
-        payment_method = random.choice(['credit_card', 'debit_card', 'paypal'])
+        payment_method = random.choice(self.config.omnichannel.payment_methods)
         order_data = {
             'customer_id': customer_id,
             'order_date': datetime.now(),
@@ -733,7 +735,8 @@ class OmnichannelPurchaseWorkflow:
             self._emit_fulfillment_event(order_id, 'picking_started', location)
             self._update_fulfillment_state(order_id, 'picking', location)
             
-            picking_time = random.triangular(5, 10, 20)  # minutes
+            oc = self.config.omnichannel
+            picking_time = random.triangular(oc.picking_time_min, oc.picking_time_mode, oc.picking_time_max)
             yield self.env.timeout(picking_time)
             
             # Emit picked event
@@ -761,7 +764,7 @@ class OmnichannelPurchaseWorkflow:
             self._update_fulfillment_state(order_id, 'packed', location, tracking_number)
         
         # 3. SHIPPING
-        carrier = random.choice(['UPS', 'FedEx', 'USPS', 'DHL'])
+        carrier = random.choice(self.config.omnichannel.carriers)
         self._emit_fulfillment_event(order_id, 'shipped', location, 
                                      {'carrier': carrier, 'tracking': tracking_number})
         self._update_fulfillment_state(order_id, 'shipped', location, tracking_number)
@@ -840,7 +843,7 @@ class OmnichannelPurchaseWorkflow:
         self.metrics.record_fulfillment_complete(order_id, self.env.now, sla_deadline)
         
         # Customer picks up (delay before pickup)
-        pickup_delay = random.uniform(30, 240)  # 30 min to 4 hours
+        pickup_delay = random.uniform(self.config.omnichannel.bopis_pickup_delay_min, self.config.omnichannel.bopis_pickup_delay_max)
         yield self.env.timeout(pickup_delay)
         
         # Customer pickup event - Mark as COMPLETED

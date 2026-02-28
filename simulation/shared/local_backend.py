@@ -195,6 +195,7 @@ class DuckDBPostgresWriter:
                 supplier_id VARCHAR NOT NULL,
                 po_number VARCHAR NOT NULL,
                 sku VARCHAR,
+                location VARCHAR,
                 order_quantity INTEGER,
                 received_quantity INTEGER,
                 order_time DOUBLE,
@@ -203,14 +204,15 @@ class DuckDBPostgresWriter:
                 expected_lead_time_days DOUBLE,
                 actual_lead_time_days DOUBLE,
                 on_time BOOLEAN,
-                short_shipped BOOLEAN DEFAULT FALSE
+                short_shipped BOOLEAN DEFAULT FALSE,
+                po_status VARCHAR DEFAULT 'RECEIVED'
             )
         """)
 
         # Daily inventory snapshots for forecasting
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS inventory_snapshots (
-                id VARCHAR PRIMARY KEY,
+                snapshot_id VARCHAR PRIMARY KEY,
                 scenario_id VARCHAR NOT NULL,
                 sku VARCHAR NOT NULL,
                 location VARCHAR NOT NULL,
@@ -252,7 +254,7 @@ class DuckDBPostgresWriter:
         # Customer segment snapshots for churn/CLV models
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS customer_snapshots (
-                id VARCHAR PRIMARY KEY,
+                snapshot_id VARCHAR PRIMARY KEY,
                 scenario_id VARCHAR NOT NULL,
                 customer_id VARCHAR NOT NULL,
                 snapshot_time DOUBLE,
@@ -765,6 +767,10 @@ def _pg_to_duckdb_sql(sql: str) -> str:
     # RETURNING clause: DuckDB doesn't support RETURNING in INSERT in the
     # same way; our adapter already handles IDs via sequences, so strip it.
     sql = re.sub(r'\bRETURNING\s+\w+', '', sql, flags=re.IGNORECASE)
+
+    # DuckDB misinterprets bare CURRENT_TIMESTAMP as a column name in
+    # ON CONFLICT DO UPDATE SET context.  Replace with now() function call.
+    sql = re.sub(r'=\s*CURRENT_TIMESTAMP\b', '= now()', sql, flags=re.IGNORECASE)
 
     return sql
 

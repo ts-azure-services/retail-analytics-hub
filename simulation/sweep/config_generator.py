@@ -201,12 +201,12 @@ ENGAGEMENT_CAMPAIGN_SWEEP = SweepConfig(
             description="Base email open/click rate"
         ),
         SweepParameter(
-            name="vip_response_bonus",
+            name="vip_response_boost",
             values=[0.05, 0.10, 0.15],
             description="Additional response rate for VIP customers"
         ),
         SweepParameter(
-            name="conversion_rate_from_click",
+            name="click_to_conversion_rate",
             values=[0.15, 0.25, 0.40],
             description="Probability of purchase after clicking"
         ),
@@ -220,12 +220,12 @@ ENGAGEMENT_RETENTION_SWEEP = SweepConfig(
     description="Sweep retention and churn parameters",
     parameters=[
         SweepParameter(
-            name="retention_offer_response_rate",
+            name="retention_response_rate",
             values=[0.15, 0.25, 0.40],
             description="Response rate for retention campaigns"
         ),
         SweepParameter(
-            name="churn_threshold_days",
+            name="churned_threshold_days",
             values=[90, 180, 365],
             description="Days without purchase to trigger churn risk"
         ),
@@ -244,17 +244,17 @@ ENGAGEMENT_LOYALTY_SWEEP = SweepConfig(
     description="Sweep loyalty program parameters",
     parameters=[
         SweepParameter(
-            name="loyalty_points_per_dollar",
+            name="points_per_dollar",
             values=[0.5, 1.0, 2.0],
             description="Points earned per dollar spent"
         ),
         SweepParameter(
-            name="redemption_threshold_points",
+            name="redemption_threshold",
             values=[50, 100, 200],
             description="Minimum points required for redemption"
         ),
         SweepParameter(
-            name="points_value_ratio",
+            name="points_to_dollar_ratio",
             values=[0.05, 0.10, 0.15],
             description="Dollar value per point when redeeming"
         ),

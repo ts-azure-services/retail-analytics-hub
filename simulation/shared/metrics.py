@@ -532,6 +532,17 @@ class MetricsCollector:
                      channel, arrival_count, order_count, revenue, abandonment_count,
                      avg_basket_size)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO UPDATE SET
+                    scenario_id = excluded.scenario_id,
+                    hour_of_simulation = excluded.hour_of_simulation,
+                    hour_of_day = excluded.hour_of_day,
+                    day_of_week = excluded.day_of_week,
+                    channel = excluded.channel,
+                    arrival_count = excluded.arrival_count,
+                    order_count = excluded.order_count,
+                    revenue = excluded.revenue,
+                    abandonment_count = excluded.abandonment_count,
+                    avg_basket_size = excluded.avg_basket_size
                 """,
                 (
                     hour_data['id'],

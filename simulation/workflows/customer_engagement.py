@@ -79,14 +79,18 @@ class CustomerEngagementWorkflow:
         # Product catalog for recommendations
         self.product_catalog: Dict[str, Tuple] = {}
         
-        # Category preferences (for recommendation logic)
-        self.categories = ["Electronics", "Clothing", "Home & Garden", "Sports", "Books", "Toys", "Food"]
+        # Category preferences (from config)
+        self.categories = config.engagement.product_categories
         
         # Real data from databases (loaded via load_real_data())
         self.real_customer_ids: List[str] = []
         self.real_products: List[Dict] = []
         self.product_names: List[str] = []  # For realistic search queries
-        
+
+        # In-memory event buffer for engagement_events ML table
+        # Accumulated alongside CosmosDB writes; flushed by persist_ml_data()
+        self._engagement_event_buffer: List[Dict] = []
+
         logger.info("Customer Engagement Workflow initialized")
     
     def load_real_data(self):
@@ -161,8 +165,9 @@ class CustomerEngagementWorkflow:
             join_date = datetime.now()
         
         # Generate random preferences
-        preferred_categories = random.sample(self.categories, k=random.randint(1, 3))
-        marketing_opt_in = random.random() < 0.7  # 70% opt in
+        ec = self.config.engagement
+        preferred_categories = random.sample(self.categories, k=random.randint(ec.preferred_category_min, ec.preferred_category_max))
+        marketing_opt_in = random.random() < ec.marketing_opt_in_probability
         
         customer_state = {
             'customer_id': customer_id,
@@ -236,24 +241,25 @@ class CustomerEngagementWorkflow:
                 customer['purchase_count'] = purchase_count
                 customer['total_spend'] = float(total_spend) if total_spend else 0.0
                 
-                # Calculate loyalty points (10% of total spend)
-                customer['loyalty_points'] = int(customer['total_spend'] * 0.1)
-                
+                # Calculate loyalty points
+                ec = self.config.engagement
+                customer['loyalty_points'] = int(customer['total_spend'] * ec.loyalty_points_ratio)
+
                 # Determine value tier based on total spend
-                if customer['total_spend'] >= 600:
+                if customer['total_spend'] >= ec.static_vip_threshold:
                     customer['value_tier'] = CustomerValueTier.VIP
-                elif customer['total_spend'] >= 300:
+                elif customer['total_spend'] >= ec.static_high_threshold:
                     customer['value_tier'] = CustomerValueTier.HIGH
-                elif customer['total_spend'] >= 100:
+                elif customer['total_spend'] >= ec.static_medium_threshold:
                     customer['value_tier'] = CustomerValueTier.MEDIUM
                 else:
                     customer['value_tier'] = CustomerValueTier.LOW
-                
+
                 # Set activity state based on purchase recency
                 if last_purchase_date:
-                    if days_ago < 30:
+                    if days_ago < ec.active_threshold_days:
                         customer['activity_state'] = CustomerActivityState.ACTIVE
-                    elif days_ago < 90:
+                    elif days_ago < ec.lapsed_threshold_days:
                         customer['activity_state'] = CustomerActivityState.LAPSED
                     else:
                         customer['activity_state'] = CustomerActivityState.LAPSED
@@ -303,9 +309,10 @@ class CustomerEngagementWorkflow:
                              channel: str = "email",
                              response: Optional[str] = None,
                              metadata: Optional[Dict] = None):
-        """Log engagement event to CosmosDB (durable engagement history)"""
+        """Log engagement event to CosmosDB (durable engagement history) and buffer for ML tables"""
+        event_id = str(uuid4())
         event_doc = {
-            'id': str(uuid4()),
+            'id': event_id,
             'customer_id': customer_id,
             'event_type': event_type,  # campaign_sent, email_open, click, purchase, service_ticket
             'campaign_id': campaign_id,
@@ -315,11 +322,39 @@ class CustomerEngagementWorkflow:
             'timestamp': datetime.now().isoformat(),
             'partitionKey': customer_id  # Partition by customer for efficient queries
         }
-        
+
         if self.persistence.cosmos:
             self.persistence.cosmos.write_document('EngagementEvents', event_doc)
-        
+
         logger.debug(f"Logged engagement event: {event_type} for {customer_id}")
+
+        # Buffer for ML PostgreSQL table
+        customer = self.customers.get(customer_id)
+        if customer:
+            now_days = self.env.now / 24.0
+            if customer['last_purchase_date'] is not None:
+                days_since_purchase = (self.env.now - customer['last_purchase_date']) / 24.0
+            else:
+                days_since_purchase = now_days
+
+            self._engagement_event_buffer.append({
+                'event_id': event_id,
+                'customer_id': customer_id,
+                'event_type': event_type,
+                'event_time': self.env.now,
+                'event_hour': int(self.env.now) % 24,
+                'day_of_week': int(self.env.now / 24) % 7,
+                'campaign_id': campaign_id,
+                'channel': channel,
+                'response': response,
+                'value_tier': customer['value_tier'].value,
+                'activity_state': customer['activity_state'].value,
+                'days_since_last_purchase': days_since_purchase,
+                'total_spend': customer['total_spend'],
+                'purchase_count': customer['purchase_count'],
+                'loyalty_points': customer['loyalty_points'],
+                'churn_risk_score': customer['churn_risk_score'],
+            })
     
     # ========== POSTGRES STATE UPDATES ==========
     
@@ -401,8 +436,8 @@ class CustomerEngagementWorkflow:
         self.persistence.postgres.execute_query(
             """
             INSERT INTO points_transactions
-                (customer_id, points_change, reason, transaction_date)
-            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                (transaction_id, customer_id, points_change, reason, transaction_date)
+            VALUES (nextval('points_transactions_transaction_id_seq'), %s, %s, %s, CURRENT_TIMESTAMP)
             """,
             (customer_id, points_change, reason)
         )
@@ -430,15 +465,15 @@ class CustomerEngagementWorkflow:
         # Monetary (total spend)
         monetary = customer['total_spend']
         
-        # Relaxed segmentation logic for realistic seeded data
-        # Champions: Recent (90 days), frequent (2+), high spend ($200+)
-        if recency <= 90 and frequency >= 2 and monetary >= 200:
+        ec = self.config.engagement
+        # Champions: Recent, frequent, high spend
+        if recency <= ec.rfm_champions_recency and frequency >= ec.rfm_champions_frequency and monetary >= ec.rfm_champions_monetary:
             return "Champions"
-        # Loyal: Recent (120 days), some purchases (1+), moderate spend ($100+)
-        elif recency <= 120 and frequency >= 1 and monetary >= 100:
+        # Loyal: Recent, some purchases, moderate spend
+        elif recency <= ec.rfm_loyal_recency and frequency >= ec.rfm_loyal_frequency and monetary >= ec.rfm_loyal_monetary:
             return "Loyal"
-        # Potential: Had any purchase in last 180 days OR any spend
-        elif recency <= 180 or monetary >= 50:
+        # Potential: Had any purchase in threshold OR any spend
+        elif recency <= ec.rfm_potential_recency or monetary >= ec.rfm_potential_monetary:
             return "Potential"
         # At Risk: Very old or no purchases
         elif recency > 180:
@@ -462,20 +497,21 @@ class CustomerEngagementWorkflow:
         else:
             days_since = 365
         
-        if days_since > 180:
-            risk_score += 0.4
-        elif days_since > 90:
-            risk_score += 0.2
-        
+        ec = self.config.engagement
+        if days_since > ec.churned_threshold_days:
+            risk_score += ec.churn_risk_high_recency_increment
+        elif days_since > ec.lapsed_threshold_days:
+            risk_score += ec.churn_risk_medium_recency_increment
+
         # Engagement factor
         if customer['unresponsive_count'] > 3:
-            risk_score += 0.3
-        
+            risk_score += ec.churn_risk_unresponsive_increment
+
         # Value factor (high value customers less likely to churn)
         if customer['value_tier'] == CustomerValueTier.VIP:
-            risk_score -= 0.2
+            risk_score -= ec.churn_risk_vip_decrement
         elif customer['value_tier'] == CustomerValueTier.HIGH:
-            risk_score -= 0.1
+            risk_score -= ec.churn_risk_high_decrement
         
         return max(0.0, min(1.0, risk_score))
     
@@ -489,8 +525,8 @@ class CustomerEngagementWorkflow:
         
         while self.env.now < self.simulation_end_time:
             # Wait for next event (purchase or time-based check)
-            # Accelerated for testing: check every ~12 hours instead of ~30 days
-            wait_time = random.expovariate(1.0 / 0.5)  # ~30 minute wait in sim time
+            ec = self.config.engagement
+            wait_time = random.expovariate(1.0 / ec.lifecycle_wait_rate)
             yield self.env.timeout(wait_time)
             
             # Check if simulation should end
@@ -508,13 +544,13 @@ class CustomerEngagementWorkflow:
             # State transitions
             old_state = customer['activity_state']
             
-            if days_since_purchase < 30:
+            if days_since_purchase < ec.active_threshold_days:
                 customer['activity_state'] = CustomerActivityState.ACTIVE
-            elif days_since_purchase < 90:
+            elif days_since_purchase < ec.lapsed_threshold_days:
                 customer['activity_state'] = CustomerActivityState.LAPSED
-            elif days_since_purchase < 180:
+            elif days_since_purchase < ec.churned_threshold_days:
                 # At risk - trigger retention campaign
-                if random.random() < 0.1:  # 10% chance to trigger
+                if random.random() < ec.retention_campaign_trigger_probability:
                     yield self.env.process(
                         self._trigger_retention_campaign(customer_id)
                     )
@@ -547,17 +583,18 @@ class CustomerEngagementWorkflow:
         customer['total_spend'] += amount
         customer['purchase_count'] += 1
         
-        # Award loyalty points (1 point per dollar)
-        points_earned = int(amount)
+        # Award loyalty points
+        ec = self.config.engagement
+        points_earned = int(amount * ec.points_per_dollar)
         self._update_loyalty_account(customer_id, points_earned, "purchase")
         self.metrics.record_metric('loyalty_points_earned', points_earned)
-        
+
         # Update value tier based on total spend
-        if customer['total_spend'] >= 5000:
+        if customer['total_spend'] >= ec.dynamic_vip_threshold:
             customer['value_tier'] = CustomerValueTier.VIP
-        elif customer['total_spend'] >= 2000:
+        elif customer['total_spend'] >= ec.dynamic_high_threshold:
             customer['value_tier'] = CustomerValueTier.HIGH
-        elif customer['total_spend'] >= 500:
+        elif customer['total_spend'] >= ec.dynamic_medium_threshold:
             customer['value_tier'] = CustomerValueTier.MEDIUM
         
         # Reset activity state to active
@@ -649,7 +686,7 @@ class CustomerEngagementWorkflow:
             
             if not eligible_customers:
                 # No customers in this segment - wait before checking again
-                accelerated_interval = interval_days * 24 * 0.1  # 10x faster for testing
+                accelerated_interval = interval_days * 24 * self.config.engagement.acceleration_factor
                 yield self.env.timeout(accelerated_interval)
                 # Check if simulation should end
                 if self.env.now >= self.simulation_end_time:
@@ -669,14 +706,15 @@ class CustomerEngagementWorkflow:
                 
                 # Simulate response
                 customer = self.customers[cust_id]
-                response_prob = 0.05  # Base 5% response rate
-                
+                ec = self.config.engagement
+                response_prob = ec.base_email_response_rate
+
                 # Adjust by value tier
                 if customer['value_tier'] == CustomerValueTier.VIP:
-                    response_prob += 0.10
+                    response_prob += ec.vip_response_boost
                 elif customer['value_tier'] == CustomerValueTier.HIGH:
-                    response_prob += 0.05
-                
+                    response_prob += ec.high_response_boost
+
                 if random.random() < response_prob:
                     # Customer responds (clicks)
                     self._emit_interaction_event(cust_id, 'email_open', campaign_id)
@@ -686,9 +724,9 @@ class CustomerEngagementWorkflow:
                     clicks += 1
                     self.metrics.record_metric('emails_opened', 1)
                     self.metrics.record_metric('clicks', 1)
-                    
+
                     # Some who click convert to purchase
-                    if random.random() < 0.3:  # 30% of clickers purchase
+                    if random.random() < ec.click_to_conversion_rate:
                         conversions += 1
                         customer['last_engagement_date'] = self.env.now
                         self.metrics.record_metric('campaign_conversions', 1)
@@ -704,8 +742,7 @@ class CustomerEngagementWorkflow:
             logger.info(f"[{self.env.now:.1f}h] ✓ Campaign '{campaign_id}' complete: {opens} opens, {clicks} clicks, {conversions} conversions")
             
             # Wait for next campaign interval (accelerated for testing)
-            # Use 1/10th of interval_days for testing (7 days → 16.8 hours)
-            accelerated_interval = interval_days * 24 * 0.1  # 10x faster for testing
+            accelerated_interval = interval_days * 24 * self.config.engagement.acceleration_factor
             yield self.env.timeout(accelerated_interval)
     
     def _trigger_retention_campaign(self, customer_id: str):
@@ -727,7 +764,7 @@ class CustomerEngagementWorkflow:
         self.metrics.record_metric('churn_risk_alerts', 1)
         
         # Higher response rate for retention offers
-        response_prob = 0.25  # 25% response rate
+        response_prob = self.config.engagement.retention_response_rate
         
         if random.random() < response_prob:
             # Customer responds
@@ -763,11 +800,12 @@ class CustomerEngagementWorkflow:
             if self.env.now >= self.simulation_end_time:
                 break
             
-            if customer['loyalty_points'] >= 100:  # Lowered threshold for more activity
+            ec = self.config.engagement
+            if customer['loyalty_points'] >= ec.redemption_threshold:
                 # Redeem with some probability
-                if random.random() < 0.4:  # 40% chance to redeem
-                    points_to_redeem = min(100, customer['loyalty_points'])  # Redeem up to 100
-                    reward_value = points_to_redeem // 10  # $1 per 10 points
+                if random.random() < ec.redemption_probability:
+                    points_to_redeem = min(ec.max_points_per_redemption, customer['loyalty_points'])
+                    reward_value = int(points_to_redeem * ec.points_to_dollar_ratio)
                     
                     self._update_loyalty_account(customer_id, -points_to_redeem, "redemption")
                     
@@ -790,17 +828,17 @@ class CustomerEngagementWorkflow:
             return
         
         while self.env.now < self.simulation_end_time:
-            # Random service issues (accelerated for testing)
-            # Check every ~18 hours instead of ~6 months
-            yield self.env.timeout(random.expovariate(1.0 / 18.0))
-            
+            # Random service issues
+            ec = self.config.engagement
+            yield self.env.timeout(random.expovariate(1.0 / ec.service_issue_interval_rate))
+
             # Check if simulation should end
             if self.env.now >= self.simulation_end_time:
                 break
-            
-            if random.random() < 0.1:  # 10% of time periods have issues
+
+            if random.random() < ec.service_issue_probability:
                 ticket_id = f"TICKET-{uuid4().hex[:8].upper()}"
-                issue_type = random.choice(['shipping_delay', 'product_defect', 'billing_issue', 'return'])
+                issue_type = random.choice(ec.service_issue_types)
                 
                 # Create support ticket in Postgres
                 if self.persistence.postgres:
@@ -820,12 +858,12 @@ class CustomerEngagementWorkflow:
                 self.metrics.record_metric('service_tickets_created', 1)
                 logger.info(f"[{self.env.now:.1f}h] 🎫 Service ticket {ticket_id} created for {customer_id[:8]}... ({issue_type})")
                 
-                # Simulate resolution (accelerated for testing)
-                resolution_time = random.uniform(0.1, 0.5)  # 6-30 minutes instead of 1-5 days
+                # Simulate resolution
+                resolution_time = random.uniform(ec.resolution_time_min, ec.resolution_time_max)
                 yield self.env.timeout(resolution_time)
-                
+
                 # Satisfaction rating
-                satisfaction = random.randint(1, 5)
+                satisfaction = random.randint(ec.satisfaction_min, ec.satisfaction_max)
                 
                 if self.persistence.postgres:
                     self.persistence.postgres.execute_query(
@@ -838,13 +876,13 @@ class CustomerEngagementWorkflow:
                     )
                 
                 # Impact on churn risk
-                if satisfaction >= 4:
+                if satisfaction >= ec.good_service_threshold:
                     # Good service reduces churn risk
-                    customer['churn_risk_score'] = max(0, customer['churn_risk_score'] - 0.1)
+                    customer['churn_risk_score'] = max(0, customer['churn_risk_score'] - ec.churn_risk_reduction_good_service)
                     self.metrics.record_metric('service_tickets_satisfied', 1)
                 else:
                     # Poor service increases churn risk
-                    customer['churn_risk_score'] = min(1.0, customer['churn_risk_score'] + 0.2)
+                    customer['churn_risk_score'] = min(1.0, customer['churn_risk_score'] + ec.churn_risk_increase_poor_service)
                     self.metrics.record_metric('service_tickets_unsatisfied', 1)
                 
                 self._update_customer_scores(customer_id)
@@ -858,8 +896,7 @@ class CustomerEngagementWorkflow:
     def segmentation_update_process(self, interval_days: float = 7.0):
         """Periodic segmentation and scoring update"""
         while self.env.now < self.simulation_end_time:
-            # Accelerated for testing: run every 16.8 hours instead of 7 days
-            yield self.env.timeout(interval_days * 24 * 0.1)  # 10x faster
+            yield self.env.timeout(interval_days * 24 * self.config.engagement.acceleration_factor)
             
             # Check if simulation should end
             if self.env.now >= self.simulation_end_time:
@@ -893,20 +930,22 @@ class CustomerEngagementWorkflow:
     
     def start_campaigns(self):
         """Start scheduled campaigns"""
+        ec = self.config.engagement
+
         # Weekly newsletter to loyal customers
-        self.env.process(self.scheduled_campaign_process("weekly_newsletter", "Loyal", 7.0))
-        
+        self.env.process(self.scheduled_campaign_process("weekly_newsletter", "Loyal", ec.campaign_weekly_newsletter_interval))
+
         # Monthly promotion to potential customers
-        self.env.process(self.scheduled_campaign_process("monthly_promo", "Potential", 30.0))
-        
+        self.env.process(self.scheduled_campaign_process("monthly_promo", "Potential", ec.campaign_monthly_promo_interval))
+
         # Bi-weekly to champions
-        self.env.process(self.scheduled_campaign_process("vip_offers", "Champions", 14.0))
-        
-        # Welcome/reactivation series for new/inactive customers (every 3 days accelerated)
-        self.env.process(self.scheduled_campaign_process("welcome_series", "Needs Attention", 3.0))
-        
-        # NEW: All opted-in customers campaign (guaranteed to have targets)
-        self.env.process(self.all_customers_campaign_process("all_customers_promo", 5.0))
+        self.env.process(self.scheduled_campaign_process("vip_offers", "Champions", ec.campaign_vip_offers_interval))
+
+        # Welcome/reactivation series for new/inactive customers
+        self.env.process(self.scheduled_campaign_process("welcome_series", "Needs Attention", ec.campaign_welcome_series_interval))
+
+        # All opted-in customers campaign (guaranteed to have targets)
+        self.env.process(self.all_customers_campaign_process("all_customers_promo", ec.campaign_all_customers_interval))
     
     def all_customers_campaign_process(self, campaign_id: str, interval_days: float = 5.0):
         """Run campaign targeting ALL opted-in customers (guaranteed engagement)"""
@@ -918,7 +957,7 @@ class CustomerEngagementWorkflow:
             ]
             
             if not eligible_customers:
-                yield self.env.timeout(interval_days * 24 * 0.1)
+                yield self.env.timeout(interval_days * 24 * self.config.engagement.acceleration_factor)
                 # Check if simulation should end
                 if self.env.now >= self.simulation_end_time:
                     break
@@ -937,16 +976,17 @@ class CustomerEngagementWorkflow:
                 
                 # Simulate response
                 customer = self.customers[cust_id]
-                response_prob = 0.08  # Base 8% response rate for general campaigns
-                
+                ec = self.config.engagement
+                response_prob = ec.all_customers_base_response
+
                 # Adjust by value tier
                 if customer['value_tier'] == CustomerValueTier.VIP:
-                    response_prob += 0.12
+                    response_prob += ec.all_customers_vip_boost
                 elif customer['value_tier'] == CustomerValueTier.HIGH:
-                    response_prob += 0.07
+                    response_prob += ec.all_customers_high_boost
                 elif customer['value_tier'] == CustomerValueTier.MEDIUM:
-                    response_prob += 0.03
-                
+                    response_prob += ec.all_customers_medium_boost
+
                 if random.random() < response_prob:
                     # Customer responds (clicks)
                     self._emit_interaction_event(cust_id, 'email_open', campaign_id)
@@ -956,9 +996,9 @@ class CustomerEngagementWorkflow:
                     clicks += 1
                     self.metrics.record_metric('emails_opened', 1)
                     self.metrics.record_metric('clicks', 1)
-                    
+
                     # Some who click convert to purchase
-                    if random.random() < 0.25:  # 25% of clickers convert
+                    if random.random() < ec.all_customers_conversion_rate:
                         conversions += 1
                         customer['last_engagement_date'] = self.env.now
                         self.metrics.record_metric('campaign_conversions', 1)
@@ -973,13 +1013,13 @@ class CustomerEngagementWorkflow:
             
             logger.info(f"[{self.env.now:.1f}h] ✓ Campaign '{campaign_id}' complete: {opens} opens, {clicks} clicks, {conversions} conversions")
             
-            # Wait for next campaign interval (accelerated for testing)
-            accelerated_interval = interval_days * 24 * 0.1  # 10x faster
+            # Wait for next campaign interval (accelerated)
+            accelerated_interval = interval_days * 24 * self.config.engagement.acceleration_factor
             yield self.env.timeout(accelerated_interval)
     
     def start_segmentation_updates(self):
         """Start periodic segmentation updates"""
-        self.env.process(self.segmentation_update_process(7.0))  # Weekly
+        self.env.process(self.segmentation_update_process(self.config.engagement.campaign_weekly_newsletter_interval))
     
     def print_engagement_summary(self):
         """Print engagement-specific metrics summary"""
@@ -1095,6 +1135,7 @@ class CustomerEngagementWorkflow:
         Writes to:
         - customer_snapshots: For churn and CLV prediction models
         - campaign_interactions: For campaign response prediction model
+        - engagement_events: For engagement pattern ML training
 
         Args:
             scenario_id: Unique scenario identifier
@@ -1205,15 +1246,17 @@ class CustomerEngagementWorkflow:
             conn.execute(
                 """
                 INSERT INTO campaign_interactions
-                    (interaction_id, scenario_id, customer_id, campaign_type,
-                     send_time, value_tier, rfm_segment, unresponsive_count,
-                     days_since_last_engagement, opened, clicked, converted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (interaction_id, scenario_id, customer_id, campaign_id,
+                     campaign_type, send_time, value_tier, rfm_segment,
+                     unresponsive_count, days_since_last_engagement,
+                     opened, clicked, converted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     interaction_id,
                     scenario_id,
                     customer_id,
+                    f"{scenario_id}_general",
                     'general',
                     self.env.now,
                     customer['value_tier'].value,
@@ -1228,6 +1271,44 @@ class CustomerEngagementWorkflow:
             interaction_count += 1
 
         logger.info(f"Persisted {interaction_count} campaign interactions for scenario {scenario_id}")
+
+        # 3. Flush engagement_events buffer (real per-event records)
+        engagement_event_count = 0
+        for evt in self._engagement_event_buffer:
+            conn.execute(
+                """
+                INSERT INTO engagement_events
+                    (event_id, scenario_id, customer_id, event_type,
+                     event_time, event_hour, day_of_week,
+                     campaign_id, channel, response,
+                     value_tier, activity_state,
+                     days_since_last_purchase, total_spend,
+                     purchase_count, loyalty_points, churn_risk_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evt['event_id'],
+                    scenario_id,
+                    evt['customer_id'],
+                    evt['event_type'],
+                    evt['event_time'],
+                    evt['event_hour'],
+                    evt['day_of_week'],
+                    evt['campaign_id'],
+                    evt['channel'],
+                    evt['response'],
+                    evt['value_tier'],
+                    evt['activity_state'],
+                    evt['days_since_last_purchase'],
+                    evt['total_spend'],
+                    evt['purchase_count'],
+                    evt['loyalty_points'],
+                    evt['churn_risk_score'],
+                ),
+            )
+            engagement_event_count += 1
+
+        logger.info(f"Persisted {engagement_event_count} engagement events for scenario {scenario_id}")
 
 
 # ========== WORKFLOW FACTORY ==========

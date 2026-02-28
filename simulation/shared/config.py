@@ -6,12 +6,18 @@ This module defines all configurable parameters including:
 - Resource capacities
 - Service level agreements (SLAs)
 - Channel-specific settings
+- Per-workflow assumptions (omnichannel, inventory, engagement)
 """
 
+import json
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -151,24 +157,270 @@ class DatabaseConfig:
 
 
 @dataclass
+class OmnichannelAssumptions:
+    """All assumptions for the omnichannel purchase workflow.
+
+    Centralizes every parameter that was previously hardcoded in
+    omnichannel_purchase.py so sweeps can override them.
+    """
+
+    # In-store browsing: number of item pickups (uniform)
+    item_pickups_min: int = 3
+    item_pickups_max: int = 8
+
+    # Queue balking behavior
+    queue_balk_threshold: int = 10        # customers in queue before balking
+    queue_balk_probability: float = 0.3   # probability of leaving if queue is long
+
+    # Online browsing behavior
+    online_pages_min: int = 2
+    online_pages_max: int = 8
+    search_results_min: int = 5
+    search_results_max: int = 50
+
+    # Online/BOPIS checkout time (minutes, uniform)
+    online_checkout_time_min: float = 1.0
+    online_checkout_time_max: float = 3.0
+    bopis_checkout_time_min: float = 1.0
+    bopis_checkout_time_max: float = 3.0
+
+    # Picking time (minutes, triangular)
+    picking_time_min: float = 5.0
+    picking_time_mode: float = 10.0
+    picking_time_max: float = 20.0
+
+    # BOPIS customer pickup delay (minutes, uniform)
+    bopis_pickup_delay_min: float = 30.0
+    bopis_pickup_delay_max: float = 240.0
+
+    # Catalog lists
+    payment_methods: List[str] = field(default_factory=lambda: [
+        'credit_card', 'debit_card', 'paypal'
+    ])
+    web_referrers: List[str] = field(default_factory=lambda: [
+        'google', 'direct', 'email', 'social'
+    ])
+    page_types: List[str] = field(default_factory=lambda: [
+        'category', 'product_detail', 'search'
+    ])
+    carriers: List[str] = field(default_factory=lambda: [
+        'UPS', 'FedEx', 'USPS', 'DHL'
+    ])
+
+
+@dataclass
+class InventoryAssumptions:
+    """All assumptions for the inventory replenishment workflow.
+
+    Centralizes every parameter that was previously hardcoded in
+    inventory_replenishment.py so sweeps can override them.
+    """
+
+    # Default policy values (fallback when DB row is NULL)
+    default_reorder_point: int = 50
+    default_order_quantity: int = 100
+    default_safety_stock: int = 20
+    default_lead_time_days: float = 7.0
+
+    # Lead time variability (std dev as fraction of mean)
+    lead_time_std_factor: float = 0.2
+
+    # Demand generation
+    daily_demand_min: float = 5.0         # units/day lower bound
+    daily_demand_max: float = 20.0        # units/day upper bound
+    demand_qty_min: int = 1               # units per transaction
+    demand_qty_max: int = 3
+
+    # Supplier behavior
+    min_lead_time_enforced: float = 1.0   # floor on lead time (days)
+    unreliable_delay_min: float = 1.2     # delay multiplier for unreliable suppliers
+    unreliable_delay_max: float = 2.0
+
+    # Receiving process
+    receiving_time_min: float = 10.0      # minutes
+    receiving_time_max: float = 30.0
+
+    # Short shipments
+    short_shipment_probability: float = 0.05
+    short_shipment_qty_min: float = 0.7   # fraction of ordered qty received
+    short_shipment_qty_max: float = 0.95
+
+    # Delivery performance
+    on_time_delivery_tolerance: float = 1.1  # 10% grace period
+
+    # Shrinkage
+    daily_shrinkage_rate: float = 0.001   # 0.1% per day
+
+    # Periodic review
+    review_interval_days: float = 7.0
+    audit_discrepancy_probability: float = 0.1
+    audit_adjustment_min: int = -5
+    audit_adjustment_max: int = 5
+
+
+@dataclass
+class EngagementAssumptions:
+    """All assumptions for the customer engagement workflow.
+
+    Centralizes every parameter that was previously hardcoded in
+    customer_engagement.py so sweeps can override them.
+    """
+
+    # Product categories
+    product_categories: List[str] = field(default_factory=lambda: [
+        "Electronics", "Clothing", "Home & Garden", "Sports", "Books", "Toys", "Food"
+    ])
+    preferred_category_min: int = 1
+    preferred_category_max: int = 3
+    marketing_opt_in_probability: float = 0.7
+
+    # Value tier thresholds (static — initial load from purchase history)
+    static_vip_threshold: float = 600.0
+    static_high_threshold: float = 300.0
+    static_medium_threshold: float = 100.0
+
+    # Value tier thresholds (dynamic — during simulation purchases)
+    dynamic_vip_threshold: float = 5000.0
+    dynamic_high_threshold: float = 2000.0
+    dynamic_medium_threshold: float = 500.0
+
+    # Activity state thresholds (days since last purchase)
+    active_threshold_days: int = 30
+    lapsed_threshold_days: int = 90
+    churned_threshold_days: int = 180
+
+    # RFM segment criteria
+    rfm_champions_recency: int = 90
+    rfm_champions_frequency: int = 2
+    rfm_champions_monetary: float = 200.0
+    rfm_loyal_recency: int = 120
+    rfm_loyal_frequency: int = 1
+    rfm_loyal_monetary: float = 100.0
+    rfm_potential_recency: int = 180
+    rfm_potential_monetary: float = 50.0
+
+    # Churn risk scoring weights
+    churn_risk_high_recency_increment: float = 0.4    # >180 days inactive
+    churn_risk_medium_recency_increment: float = 0.2  # >90 days inactive
+    churn_risk_unresponsive_increment: float = 0.3    # >3 ignored campaigns
+    churn_risk_vip_decrement: float = 0.2
+    churn_risk_high_decrement: float = 0.1
+
+    # Lifecycle process timing
+    lifecycle_wait_rate: float = 0.5      # expovariate(1/X) hours between checks
+    retention_campaign_trigger_probability: float = 0.1
+
+    # Scheduled campaign response rates
+    base_email_response_rate: float = 0.05
+    vip_response_boost: float = 0.10
+    high_response_boost: float = 0.05
+    click_to_conversion_rate: float = 0.3
+
+    # Retention campaign
+    retention_response_rate: float = 0.25
+
+    # All-customers campaign
+    all_customers_base_response: float = 0.08
+    all_customers_vip_boost: float = 0.12
+    all_customers_high_boost: float = 0.07
+    all_customers_medium_boost: float = 0.03
+    all_customers_conversion_rate: float = 0.25
+
+    # Loyalty program
+    loyalty_points_ratio: float = 0.1     # initial load: 10% of lifetime spend
+    points_per_dollar: float = 1.0        # earned per purchase dollar
+    redemption_threshold: int = 100       # min points to redeem
+    redemption_probability: float = 0.4
+    max_points_per_redemption: int = 100
+    points_to_dollar_ratio: float = 0.1   # $1 per 10 points
+
+    # Service issues
+    service_issue_interval_rate: float = 18.0  # expovariate(1/X) hours between checks
+    service_issue_probability: float = 0.1
+    service_issue_types: List[str] = field(default_factory=lambda: [
+        'shipping_delay', 'product_defect', 'billing_issue', 'return'
+    ])
+    resolution_time_min: float = 0.1      # hours
+    resolution_time_max: float = 0.5
+    satisfaction_min: int = 1
+    satisfaction_max: int = 5
+    good_service_threshold: int = 4
+    churn_risk_reduction_good_service: float = 0.1
+    churn_risk_increase_poor_service: float = 0.2
+
+    # Campaign scheduling (interval in days)
+    campaign_weekly_newsletter_interval: float = 7.0
+    campaign_monthly_promo_interval: float = 30.0
+    campaign_vip_offers_interval: float = 14.0
+    campaign_welcome_series_interval: float = 3.0
+    campaign_all_customers_interval: float = 5.0
+
+    # Time acceleration factor for campaign/segmentation processes
+    acceleration_factor: float = 0.1      # 10x faster than real time
+
+
+@dataclass
 class SimulationConfig:
     """Master configuration for simulation"""
-    
+
     distributions: DistributionConfig = field(default_factory=DistributionConfig)
     resources: ResourceConfig = field(default_factory=ResourceConfig)
     sla: SLAConfig = field(default_factory=SLAConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
-    
+
+    # Per-workflow assumptions
+    omnichannel: OmnichannelAssumptions = field(default_factory=OmnichannelAssumptions)
+    inventory: InventoryAssumptions = field(default_factory=InventoryAssumptions)
+    engagement: EngagementAssumptions = field(default_factory=EngagementAssumptions)
+
     # Simulation runtime parameters
     simulation_duration_hours: float = 24.0  # Simulate 24 hours
     random_seed: int = 42  # For reproducibility
     customer_limit: int = 500  # Max customers to load for engagement simulation
-    
+
     # Logging and output
     log_level: str = "INFO"
     enable_console_output: bool = True
     enable_event_streaming: bool = True
-    
+
+    def __post_init__(self):
+        """Load config overrides from overlay file if present."""
+        overlay_path = Path(__file__).parent.parent.parent / "config_overrides.json"
+        if overlay_path.exists():
+            try:
+                with open(overlay_path) as f:
+                    overrides = json.load(f)
+                self._apply_overrides(overrides)
+                logger.info(f"Loaded config overrides from {overlay_path}")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to load config overrides: {e}")
+
+    def _apply_overrides(self, overrides: Dict[str, Any]):
+        """Apply override dict to config fields.
+
+        Expected format:
+        {
+            "distributions": {"arrival_rate_online": 30.0},
+            "omnichannel": {"queue_balk_threshold": 15},
+            "inventory": {"daily_shrinkage_rate": 0.005},
+            "engagement": {"base_email_response_rate": 0.08}
+        }
+        """
+        for section_name, section_overrides in overrides.items():
+            section = getattr(self, section_name, None)
+            if section is None:
+                logger.warning(f"Unknown config section in overrides: {section_name}")
+                continue
+            if not isinstance(section_overrides, dict):
+                continue
+            for field_name, value in section_overrides.items():
+                if hasattr(section, field_name):
+                    setattr(section, field_name, value)
+                else:
+                    logger.warning(
+                        f"Unknown field in overrides: {section_name}.{field_name}"
+                    )
+
     def validate(self) -> bool:
         """Validate configuration completeness"""
         # When using local DuckDB backend, Azure credentials are not needed
@@ -184,11 +436,11 @@ class SimulationConfig:
             self.database.cosmos_endpoint,
             self.database.cosmos_database
         ]
-        
+
         if not all(required_fields):
-            print("⚠ Warning: Some database configuration values are missing")
+            print("Warning: Some database configuration values are missing")
             return False
-        
+
         return True
 
 

@@ -355,7 +355,7 @@ class SimulationOrchestrator:
         logger.info(f"Populating supplier registry for {len(suppliers)} suppliers...")
         for supplier_id, name, lead_time, reliability, min_qty in suppliers:
             # Use a reasonable std deviation (20% of mean)
-            lead_time_std = float(lead_time) * 0.2
+            lead_time_std = float(lead_time) * self.config.inventory.lead_time_std_factor
             # Directly populate in-memory registry without database write
             workflow.suppliers[supplier_id] = {
                 'supplier_id': supplier_id,
@@ -385,7 +385,7 @@ class SimulationOrchestrator:
         for sku, location, *_ in policies:
             # Default: 5-20 units per day demand (can be refined with historical data)
             import random
-            mean_daily_demand = random.uniform(5.0, 20.0)
+            mean_daily_demand = random.uniform(self.config.inventory.daily_demand_min, self.config.inventory.daily_demand_max)
             workflow.start_monitoring(sku, location, mean_daily_demand)
         
         # Run simulation (time unit: hours)
@@ -492,7 +492,7 @@ class SimulationOrchestrator:
         if suppliers:
             # Populate supplier registry directly (skip database writes)
             for supplier_id, name, lead_time, reliability, min_qty in suppliers:
-                lead_time_std = float(lead_time) * 0.2
+                lead_time_std = float(lead_time) * self.config.inventory.lead_time_std_factor
                 inv_workflow.suppliers[supplier_id] = {
                     'supplier_id': supplier_id,
                     'name': name,
@@ -516,7 +516,7 @@ class SimulationOrchestrator:
             # Start monitoring processes
             for sku, location, *_ in policies:
                 import random
-                mean_daily_demand = random.uniform(5.0, 20.0)
+                mean_daily_demand = random.uniform(self.config.inventory.daily_demand_min, self.config.inventory.daily_demand_max)
                 inv_workflow.start_monitoring(sku, location, mean_daily_demand)
         
         # Start omnichannel arrival processes

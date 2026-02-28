@@ -143,6 +143,22 @@ run-sweep-engagement-loyalty: ## [util] Run engagement loyalty sweep (27 scenari
 	@echo "👥 Running engagement loyalty parameter sweep..."
 	uv run python -m simulation.run_simulation --sweep engagement_loyalty --sweep-type grid
 
+# Sweep reporting
+sweep-report: ## [core] Report which sweep combos produced most volume & variety of data
+	uv run python analysis/sweep_report.py
+
+sweep-report-top5: ## [util] Sweep report showing top 5 per sweep
+	uv run python analysis/sweep_report.py --top 5
+
+sweep-recommend: ## [core] Generate recommendations from sweep results
+	uv run python analysis/sweep_recommend.py --output recommendations.json
+
+sweep-recommend-preview: ## [util] Preview what sweep recommendations would change
+	uv run python analysis/config_applier.py --preview recommendations.json
+
+sweep-apply: ## [core] Apply sweep recommendations to config
+	uv run python analysis/config_applier.py --apply recommendations.json
+
 # ML training
 train-models: ## [core] Train ML models on simulation data
 	@echo "🤖 Training ML models..."

@@ -52,6 +52,32 @@ class ScenarioTracker:
 
         self.db_path = db_path or POSTGRES_DB_PATH
         self._conn = duckdb.connect(self.db_path)
+        self._ensure_table()
+
+    def _ensure_table(self):
+        """Create the simulation_scenarios table if it doesn't exist."""
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS simulation_scenarios (
+                scenario_id VARCHAR PRIMARY KEY,
+                scenario_name VARCHAR,
+                workflow_type VARCHAR DEFAULT 'omnichannel',
+                run_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                duration_hours DOUBLE,
+                random_seed INTEGER,
+                config_json JSON,
+                status VARCHAR DEFAULT 'running',
+                total_customers INTEGER,
+                total_orders INTEGER,
+                total_revenue DOUBLE,
+                conversion_rate DOUBLE,
+                stockout_count INTEGER,
+                fill_rate DOUBLE,
+                avg_lead_time DOUBLE,
+                churn_rate DOUBLE,
+                campaign_response_rate DOUBLE,
+                avg_clv DOUBLE
+            )
+        """)
 
     def start_scenario(
         self,
@@ -368,8 +394,8 @@ class SweepRunner:
         duration_hours: float,
     ) -> Dict[str, Any]:
         """Run omnichannel purchase workflow scenario."""
-        # Apply parameter overrides to distributions
-        self._apply_distribution_overrides(config, params)
+        # Apply parameter overrides
+        self._apply_overrides(config, params)
 
         workflow = OmnichannelPurchaseWorkflow(
             env, config, resources, persistence, metrics
@@ -413,6 +439,9 @@ class SweepRunner:
         duration_hours: float,
     ) -> Dict[str, Any]:
         """Run inventory replenishment workflow scenario."""
+        # Apply parameter overrides to config (inventory section + distributions)
+        self._apply_overrides(config, params)
+
         workflow = InventoryReplenishmentWorkflow(
             env, config, resources, persistence, metrics
         )
@@ -421,13 +450,26 @@ class SweepRunner:
         # Load real products
         workflow.load_real_products()
 
-        # Load suppliers with parameter overrides
+        # Load inventory into resource registry so demand can deplete stock
+        try:
+            inv_rows = persistence.postgres.execute_query(
+                "SELECT sku, location_id, quantity_on_hand, reorder_point FROM inventory",
+                fetch=True,
+            )
+            for sku, location, qty, rop in (inv_rows or []):
+                resources.inventory.register_sku(sku, location, qty, rop)
+            logger.info(f"Registered {len(inv_rows or [])} inventory items for scenario")
+        except Exception as e:
+            logger.warning(f"Could not load inventory for scenario: {e}")
+
+        # Load suppliers and policies
         suppliers, policies = self._load_suppliers_and_policies(persistence)
 
-        # Apply supplier parameter overrides
+        # Populate supplier registry using config values
+        ic = config.inventory
         supplier_reliability = params.get("supplier_reliability", 0.95)
-        mean_lead_time = params.get("mean_lead_time_days", 7.0)
-        lead_time_var = params.get("lead_time_variability", 0.2)
+        mean_lead_time = params.get("mean_lead_time_days", ic.default_lead_time_days)
+        lead_time_var = params.get("lead_time_variability", ic.lead_time_std_factor)
 
         for supplier_id, name, _, _, min_qty in suppliers:
             workflow.suppliers[supplier_id] = {
@@ -458,12 +500,10 @@ class SweepRunner:
                 float(lead_time),
             )
 
-        # Apply demand parameter overrides
+        # Start monitoring with demand from config
         demand_multiplier = params.get("mean_daily_demand_multiplier", 1.0)
-        shrinkage_rate = params.get("daily_shrinkage_rate", 0.001)
-
         for sku, location, *_ in policies:
-            base_demand = random.uniform(5.0, 20.0)
+            base_demand = random.uniform(ic.daily_demand_min, ic.daily_demand_max)
             workflow.start_monitoring(sku, location, base_demand * demand_multiplier)
 
         # Run (time unit: hours)
@@ -505,6 +545,9 @@ class SweepRunner:
         duration_hours: float,
     ) -> Dict[str, Any]:
         """Run customer engagement workflow scenario."""
+        # Apply parameter overrides to config (engagement section)
+        self._apply_overrides(config, params)
+
         workflow = CustomerEngagementWorkflow(
             env, config, resources, persistence, metrics
         )
@@ -528,8 +571,7 @@ class SweepRunner:
         if products:
             workflow.load_product_catalog(products)
 
-        # Start campaigns with parameter overrides
-        # Note: Would need to modify workflow to accept these params
+        # Start campaigns (reads response rates etc. from config.engagement)
         workflow.start_campaigns()
         workflow.start_segmentation_updates()
 
@@ -559,18 +601,30 @@ class SweepRunner:
             "avg_clv": avg_clv,
         }
 
-    def _apply_distribution_overrides(
+    def _apply_overrides(
         self, config: SimulationConfig, params: Dict[str, Any]
     ) -> None:
-        """Apply parameter overrides to distribution config."""
-        distributions = config.distributions
+        """Apply parameter overrides to the appropriate config section.
 
+        Searches distributions, omnichannel, inventory, engagement, resources,
+        and sla sections for matching field names.
+        """
         for param_name, value in params.items():
             if param_name.startswith("_"):
                 continue
-            if hasattr(distributions, param_name):
-                setattr(distributions, param_name, value)
-                logger.debug(f"Set distributions.{param_name} = {value}")
+            applied = False
+            for section_name in [
+                "distributions", "omnichannel", "inventory",
+                "engagement", "resources", "sla",
+            ]:
+                section = getattr(config, section_name, None)
+                if section and hasattr(section, param_name):
+                    setattr(section, param_name, value)
+                    logger.debug(f"Set {section_name}.{param_name} = {value}")
+                    applied = True
+                    break
+            if not applied:
+                logger.warning(f"Unknown sweep parameter: {param_name}")
 
     def _load_product_catalog(self, persistence: PersistenceManager) -> List[tuple]:
         """Load product catalog from database."""

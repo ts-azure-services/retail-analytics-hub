@@ -74,7 +74,12 @@ class InventoryReplenishmentWorkflow:
         
         # Supplier mapping from PostgreSQL
         self.supplier_map: Dict[str, str] = {}  # supplier_id -> name
-        
+
+        # In-memory event buffers for ML table persistence
+        # Accumulated alongside CosmosDB writes; flushed by persist_ml_data()
+        self._inventory_event_buffer: List[Dict] = []
+        self._daily_snapshot_tracker: Dict[Tuple[str, str], Dict] = {}
+
         logger.info("Inventory Replenishment Workflow initialized")
     
     def load_real_products(self):
@@ -116,10 +121,10 @@ class InventoryReplenishmentWorkflow:
                 'sku': row[0],
                 'name': row[1],
                 'supplier_id': row[2],
-                'reorder_point': row[3] or 50,  # Default if not in replenishment_policy
-                'order_quantity': row[4] or 100,
-                'safety_stock': row[5] or 20,
-                'lead_time_days': row[6] or 7.0
+                'reorder_point': row[3] or self.config.inventory.default_reorder_point,
+                'order_quantity': row[4] or self.config.inventory.default_order_quantity,
+                'safety_stock': row[5] or self.config.inventory.default_safety_stock,
+                'lead_time_days': row[6] or self.config.inventory.default_lead_time_days
             }
             self.real_products.append(product)
         
@@ -287,11 +292,13 @@ class InventoryReplenishmentWorkflow:
     # ========== COSMOS OPERATIONAL EVENT LOG ==========
     
     def _log_inventory_event(self, sku: str, location: str, event_type: str,
-                            quantity_change: int, new_quantity: int, 
-                            reference_id: Optional[str] = None):
-        """Log inventory event to CosmosDB (immutable event log)"""
+                            quantity_change: int, new_quantity: int,
+                            reference_id: Optional[str] = None,
+                            quantity_before: Optional[int] = None):
+        """Log inventory event to CosmosDB (immutable event log) and buffer for ML tables"""
+        event_id = str(uuid4())
         event_doc = {
-            'id': str(uuid4()),
+            'id': event_id,
             'eventType': event_type,  # SALE, RECEIPT, ADJUSTMENT, TRANSFER, SHRINKAGE
             'sku': sku,
             'location': location,
@@ -301,11 +308,60 @@ class InventoryReplenishmentWorkflow:
             'eventTime': datetime.now().isoformat(),
             'partitionKey': sku  # Partition by SKU for efficient queries
         }
-        
+
         if self.persistence.cosmos:
             self.persistence.cosmos.write_document('InventoryEvents', event_doc)
-        
+
         logger.debug(f"Logged inventory event: {event_type} for {sku} at {location}")
+
+        # Buffer for ML PostgreSQL table
+        if quantity_before is None:
+            quantity_before = new_quantity - quantity_change
+
+        policy = self.replenishment_policies.get((sku, location), {})
+        inv = self.resources.inventory.get_inventory(sku, location)
+        on_order_qty = getattr(inv, 'on_order_qty', 0) if inv else 0
+
+        self._inventory_event_buffer.append({
+            'event_id': event_id,
+            'sku': sku,
+            'location': location,
+            'event_type': event_type,
+            'event_time': self.env.now,
+            'event_hour': int(self.env.now) % 24,
+            'day_of_week': int(self.env.now / 24) % 7,
+            'quantity_change': quantity_change,
+            'quantity_before': quantity_before,
+            'quantity_after': new_quantity,
+            'reorder_point': policy.get('reorder_point', 0),
+            'safety_stock': policy.get('safety_stock', 0),
+            'on_order_qty': on_order_qty,
+            'stockout_occurred': new_quantity <= 0,
+            'reference_id': reference_id,
+        })
+
+        # Update daily snapshot tracker
+        key = (sku, location)
+        day = int(self.env.now / 24)
+        day_key = f'day_{day}'
+        if key not in self._daily_snapshot_tracker:
+            self._daily_snapshot_tracker[key] = {}
+        if day_key not in self._daily_snapshot_tracker[key]:
+            self._daily_snapshot_tracker[key][day_key] = {
+                'demand': 0, 'receipts': 0, 'stockout_hours': 0.0,
+                'reorder_triggered': False, 'last_on_hand': new_quantity,
+                'last_on_order': on_order_qty, 'day': day,
+            }
+
+        day_data = self._daily_snapshot_tracker[key][day_key]
+        if event_type == 'SALE':
+            day_data['demand'] += abs(quantity_change)
+        elif event_type == 'RECEIPT':
+            day_data['receipts'] += quantity_change
+        day_data['last_on_hand'] = new_quantity
+        day_data['last_on_order'] = on_order_qty
+        if new_quantity <= 0:
+            day_data['stockout_hours'] += 1.0
     
     # ========== POSTGRES TRANSACTIONAL STATE UPDATES ==========
     
@@ -415,7 +471,8 @@ class InventoryReplenishmentWorkflow:
                 break
             
             # Generate demand quantity (typically 1 for retail, could be higher)
-            demand_qty = random.randint(1, 3)  # 1-3 units per transaction
+            ic = self.config.inventory
+            demand_qty = random.randint(ic.demand_qty_min, ic.demand_qty_max)
             
             # Get current inventory
             inv = self.resources.inventory.get_inventory(sku, location)
@@ -434,7 +491,8 @@ class InventoryReplenishmentWorkflow:
                 
                 # Log event to Cosmos
                 self._log_inventory_event(
-                    sku, location, 'SALE', -demand_qty, inv.quantity_on_hand
+                    sku, location, 'SALE', -demand_qty, inv.quantity_on_hand,
+                    quantity_before=inv.quantity_on_hand + demand_qty
                 )
                 
                 # Emit demand event to Event Hub
@@ -511,7 +569,13 @@ class InventoryReplenishmentWorkflow:
             # Trigger reorder
             logger.info(f"[{self.env.now:.2f}] REORDER TRIGGERED: {sku} at {location} "
                        f"(stock: {inventory_position}, ROP: {reorder_point})")
-            
+
+            # Track reorder in daily snapshot
+            day = int(self.env.now / 24)
+            day_key = f'day_{day}'
+            if key in self._daily_snapshot_tracker and day_key in self._daily_snapshot_tracker[key]:
+                self._daily_snapshot_tracker[key][day_key]['reorder_triggered'] = True
+
             # Create purchase order
             yield self.env.process(
                 self._create_purchase_order(
@@ -538,12 +602,13 @@ class InventoryReplenishmentWorkflow:
         # Generate lead time with variability
         mean_lt = supplier['mean_lead_time']
         std_lt = supplier['lead_time_std']
-        lead_time_days = max(1.0, random.normalvariate(mean_lt, std_lt))
-        
+        ic = self.config.inventory
+        lead_time_days = max(ic.min_lead_time_enforced, random.normalvariate(mean_lt, std_lt))
+
         # Check supplier reliability (may have delays)
         if random.random() > supplier['reliability']:
             # Unreliable delivery - add extra delay
-            delay_factor = random.uniform(1.2, 2.0)
+            delay_factor = random.uniform(ic.unreliable_delay_min, ic.unreliable_delay_max)
             lead_time_days *= delay_factor
             logger.warning(f"Supplier {supplier_id} delayed - lead time extended to {lead_time_days:.1f} days")
         
@@ -633,13 +698,13 @@ class InventoryReplenishmentWorkflow:
         order_qty = po_data['order_qty']
         
         # Simulate receiving process time (inspection, unloading, put-away)
-        receiving_time_minutes = random.uniform(10, 30)
+        ic = self.config.inventory
+        receiving_time_minutes = random.uniform(ic.receiving_time_min, ic.receiving_time_max)
         yield self.env.timeout(receiving_time_minutes / 60.0)  # Convert to hours
-        
+
         # Simulate possible short shipment (supplier sends less than ordered)
-        short_ship_probability = 0.05  # 5% chance
-        if random.random() < short_ship_probability:
-            received_qty = int(order_qty * random.uniform(0.7, 0.95))
+        if random.random() < ic.short_shipment_probability:
+            received_qty = int(order_qty * random.uniform(ic.short_shipment_qty_min, ic.short_shipment_qty_max))
             logger.warning(f"Short shipment on PO {po_number}: received {received_qty}/{order_qty}")
         else:
             received_qty = order_qty
@@ -652,7 +717,8 @@ class InventoryReplenishmentWorkflow:
         new_quantity = inv.quantity_on_hand if inv else received_qty
         
         self._log_inventory_event(
-            sku, location, 'RECEIPT', received_qty, new_quantity, po_number
+            sku, location, 'RECEIPT', received_qty, new_quantity, po_number,
+            quantity_before=new_quantity - received_qty
         )
         
         # Emit replenishment event to Event Hub
@@ -680,7 +746,7 @@ class InventoryReplenishmentWorkflow:
             supplier['total_lead_time'] += actual_lead_time
             
             # Check if on-time
-            if actual_lead_time <= po_data['lead_time_days'] * 1.1:  # 10% tolerance
+            if actual_lead_time <= po_data['lead_time_days'] * self.config.inventory.on_time_delivery_tolerance:
                 supplier['on_time_deliveries'] += 1
         
         # Record metrics
@@ -728,16 +794,15 @@ class InventoryReplenishmentWorkflow:
     
     # ========== INVENTORY ADJUSTMENT PROCESSES ==========
     
-    def shrinkage_process(self, sku: str, location: str, 
-                         daily_shrinkage_rate: float = 0.001):
+    def shrinkage_process(self, sku: str, location: str):
         """
         Simulate inventory shrinkage (theft, damage, miscount)
-        
+
         Args:
             sku: Product SKU
             location: Inventory location
-            daily_shrinkage_rate: Daily shrinkage as fraction of inventory (default 0.1%)
         """
+        daily_shrinkage_rate = self.config.inventory.daily_shrinkage_rate
         while self.env.now < self.simulation_end_time:
             # Daily shrinkage check
             yield self.env.timeout(24.0)  # Check daily
@@ -762,8 +827,9 @@ class InventoryReplenishmentWorkflow:
                 
                 # Log adjustment event
                 self._log_inventory_event(
-                    sku, location, 'SHRINKAGE', -shrinkage_qty, 
-                    inv.quantity_on_hand - shrinkage_qty, 'SHRINKAGE'
+                    sku, location, 'SHRINKAGE', -shrinkage_qty,
+                    inv.quantity_on_hand - shrinkage_qty, 'SHRINKAGE',
+                    quantity_before=inv.quantity_on_hand
                 )
                 
                 # Record metrics
@@ -772,12 +838,13 @@ class InventoryReplenishmentWorkflow:
                 logger.debug(f"[{self.env.now:.2f}] Shrinkage: {shrinkage_qty} units of {sku} "
                            f"at {location}")
     
-    def periodic_review_process(self, sku: str, location: str, review_interval_days: float = 7.0):
+    def periodic_review_process(self, sku: str, location: str):
         """
         Periodic inventory review and adjustment
-        
+
         Checks inventory accuracy and makes adjustments
         """
+        review_interval_days = self.config.inventory.review_interval_days
         while self.env.now < self.simulation_end_time:
             # Wait for review interval
             yield self.env.timeout(review_interval_days * 24.0)
@@ -791,8 +858,9 @@ class InventoryReplenishmentWorkflow:
                 continue
             
             # Simulate audit discrepancy (small random adjustment)
-            if random.random() < 0.1:  # 10% chance of finding discrepancy
-                adjustment = random.randint(-5, 5)
+            ic = self.config.inventory
+            if random.random() < ic.audit_discrepancy_probability:
+                adjustment = random.randint(ic.audit_adjustment_min, ic.audit_adjustment_max)
                 
                 if adjustment != 0:
                     new_qty = max(0, inv.quantity_on_hand + adjustment)
@@ -801,7 +869,8 @@ class InventoryReplenishmentWorkflow:
                     self._update_inventory_state(sku, location, actual_adjustment)
                     
                     self._log_inventory_event(
-                        sku, location, 'ADJUSTMENT', actual_adjustment, new_qty, 'AUDIT'
+                        sku, location, 'ADJUSTMENT', actual_adjustment, new_qty, 'AUDIT',
+                        quantity_before=inv.quantity_on_hand
                     )
                     
                     logger.info(f"[{self.env.now:.2f}] Inventory audit adjustment: {actual_adjustment} "
@@ -918,11 +987,12 @@ class InventoryReplenishmentWorkflow:
     def persist_ml_data(self, scenario_id: str) -> None:
         """
         Persist inventory data for ML training.
+        Flushes in-memory event buffers to PostgreSQL ML tables.
 
         Writes to:
-        - inventory_events: For stockout prediction model
-        - supplier_deliveries: For lead time prediction model
-        - inventory_snapshots: For demand forecasting
+        - inventory_events: From buffered SALE/RECEIPT/SHRINKAGE/ADJUSTMENT events
+        - supplier_deliveries: From all purchase orders (including in-transit)
+        - inventory_snapshots: From daily snapshot tracker (actual daily data)
 
         Args:
             scenario_id: Unique scenario identifier
@@ -931,132 +1001,126 @@ class InventoryReplenishmentWorkflow:
 
         conn = self.persistence.postgres._conn
 
-        # 1. Persist inventory events (from stockout and demand tracking)
+        # 1. Flush inventory_events buffer (real per-event records)
         event_count = 0
-        for sku_loc, policy in self.replenishment_policies.items():
-            sku, location = sku_loc
-
-            inv = self.resources.inventory.get_inventory(sku, location)
-            if not inv:
-                continue
-
-            # Create event record for each demand cycle tracked
-            event_id = str(uuid4())
-            stockout_occurred = self.metrics.custom_metrics.get('stockouts', 0) > 0
-            event_hour = int(self.env.now) % 24
-            day_of_week = int(self.env.now / 24) % 7
-
+        for evt in self._inventory_event_buffer:
             conn.execute(
                 """
                 INSERT INTO inventory_events
                     (event_id, scenario_id, sku, location, event_type, event_time,
-                     quantity_before, quantity_after, quantity_change,
+                     event_hour, day_of_week, quantity_change,
+                     quantity_before, quantity_after,
                      reorder_point, safety_stock, on_order_qty,
-                     event_hour, day_of_week, stockout_occurred)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     stockout_occurred, reference_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    event_id,
+                    evt['event_id'],
                     scenario_id,
-                    sku,
-                    location,
-                    'demand_consumed',
-                    self.env.now,
-                    inv.quantity_on_hand + int(self.metrics.custom_metrics.get('inventory_depletion', 0)),
-                    inv.quantity_on_hand,
-                    -int(self.metrics.custom_metrics.get('inventory_depletion', 0)),
-                    policy['reorder_point'],
-                    policy['safety_stock'],
-                    0,  # on_order_qty
-                    event_hour,
-                    day_of_week,
-                    stockout_occurred,
+                    evt['sku'],
+                    evt['location'],
+                    evt['event_type'],
+                    evt['event_time'],
+                    evt['event_hour'],
+                    evt['day_of_week'],
+                    evt['quantity_change'],
+                    evt['quantity_before'],
+                    evt['quantity_after'],
+                    evt['reorder_point'],
+                    evt['safety_stock'],
+                    evt['on_order_qty'],
+                    evt['stockout_occurred'],
+                    evt['reference_id'],
                 ),
             )
             event_count += 1
 
         logger.info(f"Persisted {event_count} inventory events for scenario {scenario_id}")
 
-        # 2. Persist supplier deliveries
+        # 2. Flush supplier deliveries (ALL POs, not just RECEIVED)
         delivery_count = 0
         for po_number, po_data in self.purchase_orders.items():
-            if po_data.get('status') == 'RECEIVED':
-                delivery_id = str(uuid4())
-                expected_lt = po_data['lead_time_days']
-                actual_lt = (po_data.get('received_time', self.env.now) - po_data['created_time']) / 24.0
+            delivery_id = str(uuid4())
+            expected_lt = po_data['lead_time_days']
+            po_status = po_data.get('status', 'PENDING')
+
+            if po_status == 'RECEIVED':
+                actual_delivery_time = po_data.get('received_time', self.env.now)
+                actual_lt = (actual_delivery_time - po_data['created_time']) / 24.0
+                received_qty = po_data.get('received_qty', po_data['order_qty'])
                 on_time = actual_lt <= expected_lt * 1.1
-                short_shipped = po_data.get('received_qty', po_data['order_qty']) < po_data['order_qty']
-
-                conn.execute(
-                    """
-                    INSERT INTO supplier_deliveries
-                        (delivery_id, scenario_id, po_number, supplier_id,
-                         sku, location, order_quantity, received_quantity,
-                         order_time, expected_lead_time_days, actual_lead_time_days,
-                         on_time, short_shipped)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        delivery_id,
-                        scenario_id,
-                        po_number,
-                        po_data['supplier_id'],
-                        po_data['sku'],
-                        po_data['location'],
-                        po_data['order_qty'],
-                        po_data.get('received_qty', po_data['order_qty']),
-                        po_data['created_time'],
-                        expected_lt,
-                        actual_lt,
-                        on_time,
-                        short_shipped,
-                    ),
-                )
-                delivery_count += 1
-
-        logger.info(f"Persisted {delivery_count} supplier deliveries for scenario {scenario_id}")
-
-        # 3. Persist inventory snapshots (daily aggregates)
-        snapshot_count = 0
-        for sku_loc, policy in self.replenishment_policies.items():
-            sku, location = sku_loc
-
-            inv = self.resources.inventory.get_inventory(sku, location)
-            if not inv:
-                continue
-
-            snapshot_id = f"{scenario_id}_{sku}_{location}"
-            snapshot_day = int(self.env.now / 24)
-            daily_demand = int(self.metrics.custom_metrics.get('inventory_depletion', 0) / max(1, snapshot_day))
-            daily_receipts = int(self.metrics.custom_metrics.get('units_received', 0) / max(1, snapshot_day))
-            stockout_hours = int(self.metrics.custom_metrics.get('stockouts', 0))
-            reorder_triggered = self.metrics.custom_metrics.get('purchase_orders_created', 0) > 0
+                short_shipped = received_qty < po_data['order_qty']
+            else:
+                actual_delivery_time = None
+                actual_lt = None
+                received_qty = 0
+                on_time = None
+                short_shipped = None
 
             conn.execute(
                 """
-                INSERT INTO inventory_snapshots
-                    (snapshot_id, scenario_id, sku, location, snapshot_day,
-                     quantity_on_hand, daily_demand, daily_receipts,
-                     stockout_hours, reorder_triggered)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (snapshot_id) DO UPDATE SET
-                    quantity_on_hand = excluded.quantity_on_hand,
-                    daily_demand = excluded.daily_demand
+                INSERT INTO supplier_deliveries
+                    (delivery_id, scenario_id, supplier_id, po_number,
+                     sku, location, order_quantity, received_quantity,
+                     order_time, expected_delivery_time, actual_delivery_time,
+                     expected_lead_time_days, actual_lead_time_days,
+                     on_time, short_shipped, po_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    snapshot_id,
+                    delivery_id,
                     scenario_id,
-                    sku,
-                    location,
-                    snapshot_day,
-                    inv.quantity_on_hand,
-                    daily_demand,
-                    daily_receipts,
-                    stockout_hours,
-                    reorder_triggered,
+                    po_data['supplier_id'],
+                    po_number,
+                    po_data['sku'],
+                    po_data.get('location', ''),
+                    po_data['order_qty'],
+                    received_qty,
+                    po_data['created_time'],
+                    po_data.get('expected_delivery_time'),
+                    actual_delivery_time,
+                    expected_lt,
+                    actual_lt,
+                    on_time,
+                    short_shipped,
+                    po_status,
                 ),
             )
-            snapshot_count += 1
+            delivery_count += 1
+
+        logger.info(f"Persisted {delivery_count} supplier deliveries for scenario {scenario_id}")
+
+        # 3. Flush inventory snapshots (one row per SKU-location per day)
+        snapshot_count = 0
+        for (sku, location), day_data_map in self._daily_snapshot_tracker.items():
+            for day_key, day_data in day_data_map.items():
+                snapshot_id = f"{scenario_id}_{sku}_{location}_{day_data['day']}"
+                conn.execute(
+                    """
+                    INSERT INTO inventory_snapshots
+                        (snapshot_id, scenario_id, sku, location, snapshot_day,
+                         quantity_on_hand, quantity_on_order, daily_demand,
+                         daily_receipts, stockout_hours, reorder_triggered)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (snapshot_id) DO UPDATE SET
+                        quantity_on_hand = excluded.quantity_on_hand,
+                        daily_demand = excluded.daily_demand
+                    """,
+                    (
+                        snapshot_id,
+                        scenario_id,
+                        sku,
+                        location,
+                        day_data['day'],
+                        day_data['last_on_hand'],
+                        day_data['last_on_order'],
+                        day_data['demand'],
+                        day_data['receipts'],
+                        day_data['stockout_hours'],
+                        day_data['reorder_triggered'],
+                    ),
+                )
+                snapshot_count += 1
 
         logger.info(f"Persisted {snapshot_count} inventory snapshots for scenario {scenario_id}")
 

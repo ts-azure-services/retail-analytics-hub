@@ -119,7 +119,7 @@ Generate docs/data.md documenting the full data model. Structure:
    - Add a paragraph clarifying that "training tables" are populated BY simulation sweeps FOR ML training — they are not outputs of ML training itself.
 
 3. **Seed Data (Operational Foundation)** — Tables created by seed scripts (seed_local.py). Organize into four sub-sections, each as a markdown table. Each table must include a Seed State column indicating whether rows are seeded or the table is created empty (schema only):
-   - Core Entities (seeded with data): customers (500), products (50), suppliers (50), inventory (250 = 50 SKUs x 5 locations), replenishment_policy (~150). Columns: Table, Database, Records, Description.
+   - Core Entities (seeded with data): customers (500), products (50), suppliers (50), inventory (250 = 50 SKUs x 5 locations), replenishment_policy (~170). Columns: Table, Database, Records, Description.
    - Transactional Tables (partially seeded): orders (500 seed), order_items (~1500-2500 seed), payments (empty), purchase_orders (empty), purchase_order_lines (empty), returns (empty). Columns: Table, Database, Seed State, Description.
    - Customer & Engagement Tables (mostly schema-only at seed): loyalty_account, customer_preferences, customer_stats, customer_scores, points_transactions, support_tickets, recommendations_cache are all empty at seed; customer_purchase_history is seeded. Columns: Table, Database, Seed State, Description.
    - Document Collections (CosmosDB): Customers (500 docs), Carts (80 docs), WorkflowEvents (50 docs) are seeded; FulfillmentState, InventoryEvents, EngagementEvents are empty. Columns: Collection, Seed State, Description.

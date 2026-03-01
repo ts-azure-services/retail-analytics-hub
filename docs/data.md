@@ -155,7 +155,7 @@ These tables are created by the seed scripts (`seed_local.py`) before any simula
 | `products` | Postgres | 50 | Product catalog — chocolate products (name, category, price, SKU) |
 | `suppliers` | Postgres | 50 | Supplier profiles (name, mean lead time, reliability, min order qty) |
 | `inventory` | Postgres | 250 | Stock positions per SKU and location (50 SKUs x 5 locations) |
-| `replenishment_policy` | Postgres | ~150 | Reorder rules per SKU/location (reorder point, order quantity, safety stock) |
+| `replenishment_policy` | Postgres | ~170 | Reorder rules per SKU/location (reorder point, order quantity, safety stock) |
 
 ### Transactional Tables (partially seeded)
 

@@ -90,8 +90,11 @@ cleanse-data-force: ## [util] Clean all data WITHOUT confirmation (use with caut
 	@echo "============================================================"
 	@echo ""
 
-validate-all: ## [util] Validate data in all databases (CosmosDB + PostgreSQL)
+validate-all: ## [util] Validate data in all databases (CosmosDB + PostgreSQL + local DuckDB)
 	uv run seed-data/validate_data.py --all
+
+validate-local: ## [core] Validate local DuckDB databases (tables, schema, row counts)
+	uv run seed-data/validate_data.py --local
 
 ## Validate CosmosDB data (count documents, show samples)
 validate-cosmos:

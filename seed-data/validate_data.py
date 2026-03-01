@@ -1,5 +1,5 @@
 """
-Database validation script for Cosmos DB and PostgreSQL.
+Database validation script for Cosmos DB, PostgreSQL, and local DuckDB.
 
 Validates seeded data and allows interactive querying.
 """
@@ -7,16 +7,16 @@ Validates seeded data and allows interactive querying.
 import os
 import sys
 import argparse
+from pathlib import Path
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 
-# Azure Cosmos DB
-from azure.cosmos import CosmosClient
-from azure.cosmos.exceptions import CosmosHttpResponseError
-from azure.identity import DefaultAzureCredential
-
-# PostgreSQL
-import psycopg
+# ---------------------------------------------------------------------------
+# Paths for local DuckDB files (mirrors seed_local.py)
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LOCAL_POSTGRES_DB = str(REPO_ROOT / "local_postgres.duckdb")
+LOCAL_COSMOS_DB = str(REPO_ROOT / "local_cosmos.duckdb")
 
 
 # Colors for output
@@ -72,6 +72,8 @@ class CosmosValidator:
     def connect(self) -> bool:
         """Connect to Cosmos DB"""
         try:
+            from azure.cosmos import CosmosClient
+            from azure.identity import DefaultAzureCredential
             credential = DefaultAzureCredential()
             self.client = CosmosClient(self.endpoint, credential=credential)
             self.database = self.client.get_database_client(self.database_name)
@@ -171,6 +173,7 @@ class PostgresValidator:
     def connect(self) -> bool:
         """Connect to PostgreSQL"""
         try:
+            import psycopg
             # psycopg3 automatically uses TLS 1.2+ with sslmode='require'
             self.conn = psycopg.connect(
                 host=self.host,
@@ -184,13 +187,10 @@ class PostgresValidator:
             self.cursor = self.conn.cursor()
             print_success(f"Connected to PostgreSQL: {self.database} (TLS enabled)")
             return True
-        except psycopg.Error as e:
+        except Exception as e:
             print_error(f"Failed to connect to PostgreSQL: {e}")
             if hasattr(e, 'sqlstate'):
                 print_error(f"SQL State: {e.sqlstate}")
-            return False
-        except Exception as e:
-            print_error(f"Connection error: {str(e)}")
             return False
     
     def list_tables(self) -> List[str]:
@@ -204,7 +204,7 @@ class PostgresValidator:
             """
             self.cursor.execute(query)
             return [row[0] for row in self.cursor.fetchall()]
-        except psycopg.Error as e:
+        except Exception as e:
             print_error(f"Failed to list tables: {e}")
             return []
     
@@ -213,7 +213,7 @@ class PostgresValidator:
         try:
             self.cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             return self.cursor.fetchone()[0]
-        except psycopg.Error as e:
+        except Exception as e:
             print_error(f"Failed to count rows in {table_name}: {e}")
             return 0
     
@@ -223,7 +223,7 @@ class PostgresValidator:
             self.cursor.execute(f"SELECT * FROM {table_name} LIMIT {limit}")
             columns = [desc[0] for desc in self.cursor.description]
             return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
-        except psycopg.Error as e:
+        except Exception as e:
             print_error(f"Failed to get sample rows from {table_name}: {e}")
             return []
     
@@ -235,7 +235,7 @@ class PostgresValidator:
                 columns = [desc[0] for desc in self.cursor.description]
                 return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
             return []
-        except psycopg.Error as e:
+        except Exception as e:
             print_error(f"Failed to execute query: {e}")
             return []
     
@@ -280,6 +280,117 @@ class PostgresValidator:
             self.conn.close()
 
 
+class DuckDBValidator:
+    """Validates local DuckDB data"""
+
+    def __init__(self, db_path: str, label: str):
+        self.db_path = db_path
+        self.label = label
+        self.conn = None
+
+    def connect(self) -> bool:
+        """Connect to DuckDB file (read-only)"""
+        if not os.path.exists(self.db_path):
+            print_error(f"DuckDB file not found: {self.db_path}")
+            print_info("Run seed_local.py first to create local databases")
+            return False
+        try:
+            import duckdb
+            self.conn = duckdb.connect(self.db_path, read_only=True)
+            print_success(f"Connected to DuckDB: {self.label} ({self.db_path})")
+            return True
+        except Exception as e:
+            print_error(f"Failed to connect to DuckDB {self.label}: {e}")
+            return False
+
+    def list_tables(self) -> List[str]:
+        """List all tables in the database"""
+        try:
+            rows = self.conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' "
+                "ORDER BY table_name"
+            ).fetchall()
+            return [r[0] for r in rows]
+        except Exception as e:
+            print_error(f"Failed to list tables: {e}")
+            return []
+
+    def get_table_schema(self, table_name: str) -> List[Dict]:
+        """Get column names and data types for a table"""
+        try:
+            rows = self.conn.execute(
+                "SELECT column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'main' AND table_name = ? "
+                "ORDER BY ordinal_position",
+                [table_name],
+            ).fetchall()
+            return [
+                {"column": r[0], "type": r[1], "nullable": r[2]}
+                for r in rows
+            ]
+        except Exception as e:
+            print_error(f"Failed to get schema for {table_name}: {e}")
+            return []
+
+    def count_rows(self, table_name: str) -> int:
+        """Count rows in a table"""
+        try:
+            result = self.conn.execute(
+                f'SELECT COUNT(*) FROM "{table_name}"'
+            ).fetchone()
+            return result[0] if result else 0
+        except Exception as e:
+            print_error(f"Failed to count rows in {table_name}: {e}")
+            return 0
+
+    def validate_all(self):
+        """Validate all tables with schema and row counts"""
+        print_header(f"Local DuckDB Validator — {self.label}")
+
+        if not self.connect():
+            return False
+
+        tables = self.list_tables()
+
+        if not tables:
+            print_info("No tables found in database")
+            return True
+
+        print_info(f"Found {len(tables)} table(s)")
+
+        for table_name in tables:
+            print_section(f"Table: {table_name}")
+
+            # Row count
+            count = self.count_rows(table_name)
+            print(f"   Rows: {Colors.GREEN}{count}{Colors.END}")
+
+            # Schema
+            schema = self.get_table_schema(table_name)
+            if schema:
+                # Calculate column widths for alignment
+                max_col = max(len(c["column"]) for c in schema)
+                max_type = max(len(c["type"]) for c in schema)
+                print(f"   Schema ({len(schema)} columns):")
+                print(f"      {Colors.BOLD}{'Column':<{max_col}}  {'Type':<{max_type}}  Nullable{Colors.END}")
+                print(f"      {'─' * max_col}  {'─' * max_type}  {'─' * 8}")
+                for col in schema:
+                    nullable = "YES" if col["nullable"] == "YES" else "NO"
+                    print(f"      {col['column']:<{max_col}}  "
+                          f"{Colors.CYAN}{col['type']:<{max_type}}{Colors.END}  "
+                          f"{nullable}")
+
+        self.close()
+        return True
+
+    def close(self):
+        """Close database connection"""
+        if self.conn:
+            self.conn.close()
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -295,10 +406,13 @@ Examples:
   
   # Validate only PostgreSQL
   python validate_data.py --postgres
-  
+
+  # Validate local DuckDB databases
+  python validate_data.py --local
+
   # Execute custom query on Cosmos DB
   python validate_data.py --cosmos --query "SELECT * FROM c WHERE c.isActive = true"
-  
+
   # Execute custom query on PostgreSQL
   python validate_data.py --postgres --query "SELECT category, COUNT(*) FROM products GROUP BY category"
         """
@@ -307,6 +421,7 @@ Examples:
     parser.add_argument('--all', action='store_true', help='Validate all databases (default)')
     parser.add_argument('--cosmos', action='store_true', help='Validate Cosmos DB only')
     parser.add_argument('--postgres', action='store_true', help='Validate PostgreSQL only')
+    parser.add_argument('--local', action='store_true', help='Validate local DuckDB databases only')
     parser.add_argument('--query', type=str, help='Execute custom query')
     parser.add_argument('--container', type=str, help='Cosmos DB container name (for custom query)')
     
@@ -316,13 +431,10 @@ Examples:
     load_dotenv()
     
     # Determine what to validate
-    validate_cosmos = args.cosmos or args.all or (not args.postgres and not args.all)
-    validate_postgres = args.postgres or args.all or (not args.cosmos and not args.all)
-    
-    # If neither specified, validate both
-    if not args.cosmos and not args.postgres:
-        validate_cosmos = True
-        validate_postgres = True
+    any_specified = args.cosmos or args.postgres or args.local
+    validate_cosmos = args.cosmos or args.all or not any_specified
+    validate_postgres = args.postgres or args.all or not any_specified
+    validate_local = args.local or args.all or not any_specified
     
     # Track success status
     success = True
@@ -389,6 +501,16 @@ Examples:
                 if pg_validator:
                     pg_validator.close()
     
+    # Validate local DuckDB databases
+    if validate_local:
+        for db_path, label in [
+            (LOCAL_POSTGRES_DB, "Local PostgreSQL (DuckDB)"),
+            (LOCAL_COSMOS_DB, "Local CosmosDB (DuckDB)"),
+        ]:
+            dv = DuckDBValidator(db_path, label)
+            if not dv.validate_all():
+                success = False
+
     # Print final status
     if success:
         print(f"\n{Colors.GREEN}{'=' * 60}{Colors.END}")

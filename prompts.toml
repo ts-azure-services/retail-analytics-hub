@@ -1,0 +1,132 @@
+[readme]
+prompt = """
+Generate README.md for this retail simulation repository. The README must contain exactly two sections:
+
+1. **Title and description** — "# Retail Workflows" followed by a 2-3 sentence summary that covers: it's a discrete-event simulation framework built with SimPy, it simulates three interconnected retail workflows (omnichannel purchase, inventory replenishment, customer engagement), and it includes a parameter sweep pipeline that tunes assumptions and trains ML models on the generated data.
+
+2. **Repo Structure** — A tree diagram inside a fenced code block showing every directory and Python file in the repository. Include one-line comments for each file/directory explaining its purpose. The tree must cover: simulation/ (shared/, workflows/, sweep/, ml/, run_simulation.py), analysis/, seed-data/, docs/, and Makefile. Verify the tree against actual files on disk.
+
+Constraints:
+- No Makefile commands or usage instructions
+- No output samples
+- No code snippets
+- No setup/installation section
+- No links to external resources
+"""
+
+[workflows-docs]
+prompt = """
+Generate docs/workflows.md describing the three simulation workflows. Structure:
+
+1. **Introduction** — One paragraph: the simulation models three retail domains, each runs as SimPy processes over a configurable time horizon, persisting data to DuckDB.
+
+2. **For each workflow** (Omnichannel Purchase, Inventory Replenishment, Customer Engagement), include:
+   - A brief description (1-2 sentences) of what it simulates
+   - **Process Flow** — Numbered steps describing each stage of the workflow (arrival → checkout → fulfillment, demand → reorder → delivery, lifecycle → campaigns → churn). Each step gets a bold label and a one-sentence explanation.
+   - **Key Metrics** — Bullet list of the KPIs this workflow tracks
+   - **Data Tables** — The DuckDB tables this workflow writes to, with a one-line description of each
+
+Constraints:
+- No Makefile commands or usage instructions
+- No output samples or example data
+- No code snippets
+- Separate workflows with horizontal rules
+- Use the actual table names from shared/local_backend.py
+"""
+
+[concepts-docs]
+prompt = """
+Generate docs/concepts.md covering the architecture and key concepts. Structure:
+
+1. **Closed-Loop Workflow** — Describe the four-stage loop: Model → Configure → Sweep → Recommend + Apply. Explain how the loop is extensible when new assumptions are added.
+
+2. **SimPy Environment** — One paragraph explaining discrete-event simulation: time advances only on events, processes yield timeouts and resource requests, environment runs for a configurable duration.
+
+3. **Centralized Configuration** — Explain that SimulationConfig in shared/config.py is the single source of truth. Include a table listing each nested dataclass section (DistributionConfig, ResourceConfig, SLAConfig, OmnichannelAssumptions, InventoryAssumptions, EngagementAssumptions) with its scope and example fields.
+   - **Config Overrides** subsection: explain config_overrides.json auto-loading via __post_init__.
+
+4. **Metrics Collection** — One paragraph on MetricsCollector: tracks KPIs during simulation, computes aggregates after runs, persists raw events and summaries.
+
+5. **Persistence** — One paragraph on DuckDB persistence via shared/persistence.py and local_backend.py, explaining the local backend mirrors cloud schemas for offline development.
+
+Constraints:
+- No Makefile commands or usage instructions
+- No output samples
+- Minimize code snippets (prefer tables and prose over code blocks)
+- Cross-reference workflows.md for table listings
+"""
+
+[sweeps-docs]
+prompt = """
+Generate docs/sweeps.md documenting the parameter sweep framework. Structure:
+
+1. **Introduction** — One paragraph: sweeps systematically explore parameter space for diverse ML training data and realistic outputs.
+
+2. **How Sweeps Work** — Four numbered steps: define parameters, generate scenarios, execute (isolated DB copies, parallel-safe), persist results.
+
+3. **Available Sweeps** — Table with columns: Sweep name, Workflow, Parameters Varied, Scenario count. List all 9 sweeps (conversion, demand, fulfillment, inventory_supply, inventory_policy, inventory_demand, engagement_campaign, engagement_retention, engagement_loyalty). Note that parameters are defined in sweep/config_generator.py as SweepConfig objects.
+
+4. **Centralized Assumptions** — Table showing each assumptions dataclass (OmnichannelAssumptions, InventoryAssumptions, EngagementAssumptions) with field count and examples. Explain the generic override mechanism.
+
+5. **Recommendations** — Three subsections:
+   - Scoring: weighted composite (volume 0.3, variety 0.3, KPI realism 0.4)
+   - Convergence Analysis: how converged vs. divergent parameters are handled
+   - Applying Recommendations: recommendations.json → preview → config_overrides.json → auto-loaded
+
+6. **Sweep Reporting** — Table with dimensions (Volume, Variety, Primary KPI), what each ranks, and why it matters.
+
+7. **Extending the Framework** — Two subsections: adding a new sweep (3 steps), adding a new assumption (4 steps).
+
+Constraints:
+- No Makefile commands or usage instructions
+- No output samples or log excerpts
+- No "current observations" or status notes about incomplete features
+- Minimal code snippets (prefer tables and prose)
+"""
+
+[ml-docs]
+prompt = """
+Generate docs/ml.md documenting the ML training pipeline. Structure:
+
+1. **Introduction** — One paragraph: after sweeps, the pipeline trains predictive models on simulation data using scikit-learn (gradient boosting) and Prophet (time series), serialized to .joblib.
+
+2. **Data Flow** — A single-line flow diagram in a code block: Simulation runs → DuckDB tables → DataExtractor → Feature engineering → Model training → .joblib artifacts. One sentence explaining DataExtractor's role in ml/data_prep.py.
+
+3. **Models** — Table with columns: Model name, Type (Classification/Regression/Time Series), Target Variable, Key Features. List all 9 models: Conversion, Order Value, Demand Forecast, Fulfillment, Stockout, Lead Time, Churn, Campaign Response, CLV.
+
+4. **Training Process** — Five numbered steps: Extract (DataExtractor queries), Preprocess (encoding, missing values), Train (classifier/regressor/Prophet), Evaluate (cross-validation, AUC/MAE/R²), Serialize (.joblib bundle). Note that analysis/train_models.py orchestrates training with model group filtering.
+
+5. **Adding a New Model** — Four numbered steps: create model class in ml/, add extraction query to data_prep.py, register in train_models.py, export from ml/__init__.py.
+
+Constraints:
+- No Makefile commands or usage instructions
+- No output samples or prediction examples
+- No code snippets showing model usage or imports
+- Keep the models table as the primary reference
+"""
+
+[data-docs]
+prompt = """
+Generate docs/data.md documenting the full data model. Structure:
+
+1. **Introduction** — One paragraph: simulation persists to local DuckDB files (local_postgres.duckdb and local_cosmos.duckdb) that mirror cloud schemas (Azure PostgreSQL, CosmosDB).
+
+2. **Seed Data (Operational Foundation)** — Tables created by seed scripts before simulation runs. Organize into three sub-sections, each as a table with columns (Table, Database, Description):
+   - Core Entities: customers, products, inventory, suppliers, replenishment_policy
+   - Transactional Tables: orders, order_items, payments, purchase_orders, purchase_order_lines, returns
+   - Customer & Engagement Tables: loyalty_account, customer_preferences, customer_stats, customer_scores, points_transactions, support_tickets, customer_purchase_history, recommendations_cache
+   - Document Collections (CosmosDB-style): as a separate table with columns (Collection, Database, Description) listing Customers, Carts, WorkflowEvents, FulfillmentState, InventoryEvents, EngagementEvents
+
+3. **Simulation Data (ML Training)** — Tables created by simulation runs and sweeps. Organize into sub-sections:
+   - Scenario Tracking: simulation_scenarios table with its purpose
+   - Omnichannel Tables: table with columns (Table, ML Models Served, Key Columns) for customer_journeys, order_metrics, hourly_demand
+   - Inventory Tables: same format for inventory_events, supplier_deliveries, inventory_snapshots
+   - Engagement Tables: same format for customer_snapshots, campaign_interactions, engagement_events
+
+Constraints:
+- No Makefile commands or usage instructions
+- No output samples or query examples
+- No code snippets
+- Use tables as the primary format for listing schema information
+- Verify table/collection names against seed_local.py and local_backend.py
+"""

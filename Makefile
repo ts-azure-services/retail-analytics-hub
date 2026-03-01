@@ -138,7 +138,7 @@ ALL_SWEEPS = conversion demand fulfillment \
              engagement_campaign engagement_retention engagement_loyalty
 
 # Omnichannel workflow sweeps
-run-sweep-conversion: ## [core] Run conversion parameter sweep (36 scenarios)
+run-sweep-conversion: ## [util] Run conversion parameter sweep (36 scenarios)
 	@echo "🔄 Running conversion parameter sweep..."
 	$(call run-isolated-sweep,conversion)
 
@@ -228,7 +228,7 @@ run-all-sweeps: ## [core] Run ALL 9 parameter sweeps in parallel (isolated DBs)
 	echo ""
 
 # Check sweep progress (run from another terminal while sweeps are in-flight)
-sweep-status: ## [util] Show progress of running/completed sweeps
+sweep-status: ## [core] Show progress of running/completed sweeps
 	@echo ""
 	@echo "============================================================"
 	@echo "SWEEP STATUS"
@@ -258,7 +258,7 @@ merge-sweeps: ## [core] Merge all sweep results into main databases
 merge-sweeps-dry: ## [util] Preview what merge-sweeps would do (no writes)
 	uv run seed-data/merge_sweeps.py --dry-run
 
-clean-sweeps: ## [util] Remove sweep-isolated database files
+clean-sweeps: ## [core] Remove sweep-isolated database files
 	@echo "🗑  Removing sweep databases..."
 	@rm -rf $(SWEEPS_DIR)
 	@echo "✓ Sweep databases removed"

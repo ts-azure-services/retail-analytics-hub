@@ -27,8 +27,14 @@ logger = logging.getLogger(__name__)
 # Paths – databases live at the repo root
 # ---------------------------------------------------------------------------
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-POSTGRES_DB_PATH = str(_REPO_ROOT / "local_postgres.duckdb")
-COSMOS_DB_PATH = str(_REPO_ROOT / "local_cosmos.duckdb")
+POSTGRES_DB_PATH = os.environ.get(
+    "LOCAL_POSTGRES_DB",
+    str(_REPO_ROOT / "local_postgres.duckdb"),
+)
+COSMOS_DB_PATH = os.environ.get(
+    "LOCAL_COSMOS_DB",
+    str(_REPO_ROOT / "local_cosmos.duckdb"),
+)
 
 
 def _decimal_to_float(obj: Any) -> Any:

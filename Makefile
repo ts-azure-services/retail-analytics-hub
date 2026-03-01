@@ -107,44 +107,161 @@ validate-postgres:
 
 ##@ Parameter Sweeps & ML
 
+SWEEPS_DIR = sweeps
+
+# Helper: copy seed DBs into an isolated sweep DB pair, then run the sweep.
+# When called directly (make run-sweep-X), output goes to terminal.
+# Usage: $(call run-isolated-sweep,<sweep-name>)
+define run-isolated-sweep
+@mkdir -p $(SWEEPS_DIR)
+@cp local_postgres.duckdb $(SWEEPS_DIR)/$(1)_postgres.duckdb
+@cp local_cosmos.duckdb $(SWEEPS_DIR)/$(1)_cosmos.duckdb
+LOCAL_POSTGRES_DB=$(CURDIR)/$(SWEEPS_DIR)/$(1)_postgres.duckdb \
+LOCAL_COSMOS_DB=$(CURDIR)/$(SWEEPS_DIR)/$(1)_cosmos.duckdb \
+uv run python -m simulation.run_simulation --sweep $(1) --sweep-type grid
+endef
+
+# Helper: same as above but redirects output to a log file (for parallel runs).
+# Usage: $(call run-isolated-sweep-logged,<sweep-name>)
+define run-isolated-sweep-logged
+@mkdir -p $(SWEEPS_DIR)
+@cp local_postgres.duckdb $(SWEEPS_DIR)/$(1)_postgres.duckdb
+@cp local_cosmos.duckdb $(SWEEPS_DIR)/$(1)_cosmos.duckdb
+LOCAL_POSTGRES_DB=$(CURDIR)/$(SWEEPS_DIR)/$(1)_postgres.duckdb \
+LOCAL_COSMOS_DB=$(CURDIR)/$(SWEEPS_DIR)/$(1)_cosmos.duckdb \
+uv run python -m simulation.run_simulation --sweep $(1) --sweep-type grid \
+> $(SWEEPS_DIR)/$(1).log 2>&1
+endef
+
+ALL_SWEEPS = conversion demand fulfillment \
+             inventory_supply inventory_policy inventory_demand \
+             engagement_campaign engagement_retention engagement_loyalty
+
 # Omnichannel workflow sweeps
 run-sweep-conversion: ## [core] Run conversion parameter sweep (36 scenarios)
 	@echo "🔄 Running conversion parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep conversion --sweep-type grid
+	$(call run-isolated-sweep,conversion)
 
 run-sweep-demand: ## [util] Run demand pattern sweep (36 scenarios)
 	@echo "🔄 Running demand parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep demand --sweep-type grid
+	$(call run-isolated-sweep,demand)
 
 run-sweep-fulfillment: ## [util] Run fulfillment parameter sweep (27 scenarios)
 	@echo "🔄 Running fulfillment parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep fulfillment --sweep-type grid
+	$(call run-isolated-sweep,fulfillment)
 
 # Inventory workflow sweeps
 run-sweep-inventory-supply: ## [util] Run inventory supply chain sweep (27 scenarios)
 	@echo "📦 Running inventory supply parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep inventory_supply --sweep-type grid
+	$(call run-isolated-sweep,inventory_supply)
 
 run-sweep-inventory-policy: ## [util] Run inventory policy sweep (27 scenarios)
 	@echo "📦 Running inventory policy parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep inventory_policy --sweep-type grid
+	$(call run-isolated-sweep,inventory_policy)
 
 run-sweep-inventory-demand: ## [util] Run inventory demand sweep (27 scenarios)
 	@echo "📦 Running inventory demand parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep inventory_demand --sweep-type grid
+	$(call run-isolated-sweep,inventory_demand)
 
 # Engagement workflow sweeps
 run-sweep-engagement-campaign: ## [util] Run engagement campaign sweep (27 scenarios)
 	@echo "👥 Running engagement campaign parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep engagement_campaign --sweep-type grid
+	$(call run-isolated-sweep,engagement_campaign)
 
 run-sweep-engagement-retention: ## [util] Run engagement retention sweep (27 scenarios)
 	@echo "👥 Running engagement retention parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep engagement_retention --sweep-type grid
+	$(call run-isolated-sweep,engagement_retention)
 
 run-sweep-engagement-loyalty: ## [util] Run engagement loyalty sweep (27 scenarios)
 	@echo "👥 Running engagement loyalty parameter sweep..."
-	uv run python -m simulation.run_simulation --sweep engagement_loyalty --sweep-type grid
+	$(call run-isolated-sweep,engagement_loyalty)
+
+# Run all sweeps in parallel with per-sweep log files and live progress
+run-all-sweeps: ## [core] Run ALL 9 parameter sweeps in parallel (isolated DBs)
+	@echo ""
+	@echo "============================================================"
+	@echo "🚀 Launching all 9 sweeps in parallel..."
+	@echo "============================================================"
+	@echo "Logs: $(SWEEPS_DIR)/<sweep>.log"
+	@echo ""
+	@mkdir -p $(SWEEPS_DIR)
+	@# Launch each sweep as a background process with its own log
+	@for s in $(ALL_SWEEPS); do \
+		cp local_postgres.duckdb $(SWEEPS_DIR)/$${s}_postgres.duckdb; \
+		cp local_cosmos.duckdb $(SWEEPS_DIR)/$${s}_cosmos.duckdb; \
+		LOCAL_POSTGRES_DB=$(CURDIR)/$(SWEEPS_DIR)/$${s}_postgres.duckdb \
+		LOCAL_COSMOS_DB=$(CURDIR)/$(SWEEPS_DIR)/$${s}_cosmos.duckdb \
+		uv run python -m simulation.run_simulation --sweep $$s --sweep-type grid \
+			> $(SWEEPS_DIR)/$$s.log 2>&1 & \
+		echo "  Started: $$s (pid $$!)"; \
+	done; \
+	echo ""; \
+	echo "Waiting for all sweeps to finish..."; \
+	echo "  Tip: tail -f $(SWEEPS_DIR)/<sweep>.log to watch a specific sweep"; \
+	echo ""; \
+	FAIL=0; \
+	wait || FAIL=1; \
+	echo "============================================================"; \
+	echo "RESULTS"; \
+	echo "============================================================"; \
+	for s in $(ALL_SWEEPS); do \
+		if [ -f $(SWEEPS_DIR)/$$s.log ]; then \
+			if grep -q "SWEEP COMPLETE" $(SWEEPS_DIR)/$$s.log 2>/dev/null; then \
+				SCENARIOS=$$(grep -c "^  Completed " $(SWEEPS_DIR)/$$s.log 2>/dev/null || echo 0); \
+				printf "  ✓ %-28s %s scenarios\n" "$$s" "$$SCENARIOS"; \
+			else \
+				printf "  ✗ %-28s FAILED (see %s/%s.log)\n" "$$s" "$(SWEEPS_DIR)" "$$s"; \
+				FAIL=1; \
+			fi; \
+		else \
+			printf "  ? %-28s no log found\n" "$$s"; \
+			FAIL=1; \
+		fi; \
+	done; \
+	echo "============================================================"; \
+	if [ $$FAIL -eq 0 ]; then \
+		echo "✓ All sweeps complete. Run 'make merge-sweeps' to consolidate."; \
+	else \
+		echo "⚠ Some sweeps failed. Check logs in $(SWEEPS_DIR)/*.log"; \
+	fi; \
+	echo "============================================================"; \
+	echo ""
+
+# Check sweep progress (run from another terminal while sweeps are in-flight)
+sweep-status: ## [util] Show progress of running/completed sweeps
+	@echo ""
+	@echo "============================================================"
+	@echo "SWEEP STATUS"
+	@echo "============================================================"
+	@for s in $(ALL_SWEEPS); do \
+		if [ -f $(SWEEPS_DIR)/$$s.log ]; then \
+			if grep -q "SWEEP COMPLETE" $(SWEEPS_DIR)/$$s.log 2>/dev/null; then \
+				SCENARIOS=$$(grep -c "^  Completed " $(SWEEPS_DIR)/$$s.log 2>/dev/null || echo 0); \
+				printf "  ✓ %-28s done  (%s scenarios)\n" "$$s" "$$SCENARIOS"; \
+			elif grep -q "FAILED" $(SWEEPS_DIR)/$$s.log 2>/dev/null; then \
+				printf "  ✗ %-28s FAILED\n" "$$s"; \
+			else \
+				LAST=$$(grep "^\[" $(SWEEPS_DIR)/$$s.log 2>/dev/null | tail -1); \
+				printf "  ⏳ %-28s %s\n" "$$s" "$$LAST"; \
+			fi; \
+		else \
+			printf "  - %-28s not started\n" "$$s"; \
+		fi; \
+	done
+	@echo "============================================================"
+	@echo ""
+
+# Sweep merge & cleanup
+merge-sweeps: ## [core] Merge all sweep results into main databases
+	uv run seed-data/merge_sweeps.py
+
+merge-sweeps-dry: ## [util] Preview what merge-sweeps would do (no writes)
+	uv run seed-data/merge_sweeps.py --dry-run
+
+clean-sweeps: ## [util] Remove sweep-isolated database files
+	@echo "🗑  Removing sweep databases..."
+	@rm -rf $(SWEEPS_DIR)
+	@echo "✓ Sweep databases removed"
 
 # Sweep reporting
 sweep-report: ## [core] Report which sweep combos produced most volume & variety of data

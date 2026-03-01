@@ -12,3 +12,5 @@ wheels/
 # Other
 *.log
 *.duckdb
+*.duckdb.wal
+sweeps/

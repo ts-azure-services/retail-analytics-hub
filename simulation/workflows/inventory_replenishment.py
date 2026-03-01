@@ -63,7 +63,7 @@ class InventoryReplenishmentWorkflow:
         # Active purchase orders (PO_number -> PO_data)
         self.purchase_orders: Dict[str, Dict] = {}
         
-        # PO counter
+        # PO counter – initialised from DB in _init_po_counter()
         self.po_counter = 0
         
         # Backorder queues (SKU, location) -> list of pending orders
@@ -82,6 +82,25 @@ class InventoryReplenishmentWorkflow:
 
         logger.info("Inventory Replenishment Workflow initialized")
     
+    def _init_po_counter(self):
+        """Set po_counter from the max existing PO number in the database
+        so that new runs don't collide with POs from previous runs."""
+        if not self.persistence.postgres:
+            return
+        today_prefix = f"PO-{datetime.now().strftime('%Y%m%d')}-"
+        result = self.persistence.postgres.execute_query(
+            "SELECT MAX(po_number) FROM purchase_orders WHERE po_number LIKE ?",
+            (f"{today_prefix}%",),
+            fetch=True,
+        )
+        if result and result[0][0]:
+            # Extract the numeric suffix, e.g. "PO-20260228-00013" → 13
+            try:
+                self.po_counter = int(result[0][0].split("-")[-1])
+                logger.info(f"Resuming PO counter at {self.po_counter}")
+            except (ValueError, IndexError):
+                pass
+
     def load_real_products(self):
         """
         Load real products and suppliers from PostgreSQL for data integrity.
@@ -90,6 +109,9 @@ class InventoryReplenishmentWorkflow:
         """
         if not self.persistence.postgres:
             raise RuntimeError("PostgreSQL not configured - cannot load real products")
+
+        # Initialise PO counter from existing data so we don't create duplicates
+        self._init_po_counter()
         
         # Load products with replenishment policies
         query = """
@@ -148,11 +170,19 @@ class InventoryReplenishmentWorkflow:
         if not self.real_products:
             raise RuntimeError("No products available - cannot run inventory workflow")
     
-    def configure_replenishment_policy(self, sku: str, location: str, 
+    def configure_replenishment_policy(self, sku: str, location: str,
                                       reorder_point: int, order_quantity: int,
                                       safety_stock: int, supplier_id: str,
-                                      lead_time_days: float):
-        """Configure replenishment policy for a SKU at a location"""
+                                      lead_time_days: float,
+                                      persist: bool = True):
+        """Configure replenishment policy for a SKU at a location.
+
+        Args:
+            persist: If False, only update the in-memory policy without writing
+                     back to the database.  Sweep runs should pass False so that
+                     multiplied values don't overwrite the seed data and compound
+                     across runs.
+        """
         key = (sku, location)
         self.replenishment_policies[key] = {
             'sku': sku,
@@ -163,13 +193,13 @@ class InventoryReplenishmentWorkflow:
             'supplier_id': supplier_id,
             'lead_time_days': lead_time_days
         }
-        
+
         # Persist policy to Postgres
-        if self.persistence.postgres:
+        if persist and self.persistence.postgres:
             self.persistence.postgres.execute_query(
                 """
-                INSERT INTO replenishment_policy 
-                    (sku, location_id, supplier_id, reorder_point, order_quantity, 
+                INSERT INTO replenishment_policy
+                    (sku, location_id, supplier_id, reorder_point, order_quantity,
                      safety_stock, lead_time_days)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (sku, location_id) DO UPDATE SET
@@ -404,14 +434,21 @@ class InventoryReplenishmentWorkflow:
                 (po_number, supplier_id, 'PENDING', expected_delivery_date)
             )
             
+            # Get next po_line_id from sequence (DuckDB doesn't auto-generate SERIAL)
+            line_id_row = self.persistence.postgres.execute_query(
+                "SELECT nextval('purchase_order_lines_po_line_id_seq')",
+                fetch=True,
+            )
+            po_line_id = line_id_row[0][0] if line_id_row else None
+
             # Create PO line
             self.persistence.postgres.execute_query(
                 """
-                INSERT INTO purchase_order_lines (po_number, sku, location_id,
+                INSERT INTO purchase_order_lines (po_line_id, po_number, sku, location_id,
                                                order_qty, received_qty)
-                VALUES (%s, %s, %s, %s, 0)
+                VALUES (%s, %s, %s, %s, %s, 0)
                 """,
-                (po_number, sku, location, quantity)
+                (po_line_id, po_number, sku, location, quantity)
             )
         
         logger.debug(f"Created PO record: {po_number} for {quantity} units of {sku}")

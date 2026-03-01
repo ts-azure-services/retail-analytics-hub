@@ -566,28 +566,53 @@ class OmnichannelPurchaseWorkflow:
         return None
     
     def _generate_basket(self, customer_id: Optional[str] = None) -> Optional[List[Dict]]:
-        """Fetch real cart data from CosmosDB - NO FALLBACK to synthetic baskets
-        
+        """Generate a shopping basket for the customer.
+
+        Tries real cart data from CosmosDB first.  When no real cart exists,
+        falls back to a synthetic basket drawn from the product catalog so that
+        the simulation still produces orders and meaningful metrics.
+
         Returns:
-            List of basket items if real cart found, None otherwise
+            List of basket items, or None if no product catalog is loaded.
         """
         if not self.product_catalog:
             logger.warning("No product catalog loaded")
             return None
-        
-        # DATA INTEGRITY: Only use real cart data from CosmosDB
+
         if not customer_id or not self.real_customer_ids:
             logger.warning("Cannot generate basket: No customer_id or real customers not loaded")
             return None
-        
+
+        # Prefer real cart data when available
         real_basket = self._try_fetch_real_cart(customer_id)
-        
-        if not real_basket:
-            # No fallback - customer has no cart in CosmosDB
-            logger.debug(f"No active cart found for customer {customer_id[:8]}... - skipping journey")
-            return None
-        
-        return real_basket
+        if real_basket:
+            return real_basket
+
+        # Synthetic fallback — pick random items from the product catalog
+        basket_size = max(
+            self.config.distributions.min_basket_size,
+            min(
+                int(random.gauss(
+                    self.config.distributions.basket_size_mean, 1.0
+                )),
+                self.config.distributions.max_basket_size,
+            ),
+        )
+        skus = list(self.product_catalog.keys())
+        selected_skus = random.sample(skus, min(basket_size, len(skus)))
+
+        basket = []
+        for sku in selected_skus:
+            product_id, price, category = self.product_catalog[sku]
+            basket.append({
+                'sku': sku,
+                'product_id': product_id,
+                'quantity': random.randint(1, 3),
+                'price': price,
+                'category': category,
+            })
+
+        return basket
     
     def _process_payment(self, customer_id: str, basket: List[Dict], 
                         total_amount: float, channel: str, location: str,

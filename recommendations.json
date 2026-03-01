@@ -1,0 +1,709 @@
+{
+  "top_n": 5,
+  "weights": {
+    "volume": 0.3,
+    "variety": 0.3,
+    "kpi": 0.4
+  },
+  "sweeps": {
+    "engagement_loyalty": {
+      "workflow_type": "engagement",
+      "n_scenarios_scored": 27,
+      "top_scenario": "engagement_loyalty_0019",
+      "top_composite_score": 0.9485,
+      "top_params": {
+        "points_per_dollar": 2.0,
+        "redemption_threshold": 50,
+        "points_to_dollar_ratio": 0.1,
+        "_scenario_index": 19
+      },
+      "recommendations": {
+        "points_per_dollar": {
+          "type": "range",
+          "min": 0.5,
+          "max": 2.0,
+          "values_seen": [
+            0.5,
+            1.0,
+            2.0
+          ]
+        },
+        "redemption_threshold": {
+          "type": "range",
+          "min": 50,
+          "max": 100,
+          "values_seen": [
+            50,
+            100
+          ]
+        },
+        "points_to_dollar_ratio": {
+          "type": "range",
+          "min": 0.05,
+          "max": 0.15,
+          "values_seen": [
+            0.05,
+            0.1,
+            0.15
+          ]
+        }
+      },
+      "recommendations_by_section": {
+        "engagement": {
+          "points_per_dollar": {
+            "type": "range",
+            "min": 0.5,
+            "max": 2.0,
+            "values_seen": [
+              0.5,
+              1.0,
+              2.0
+            ]
+          },
+          "redemption_threshold": {
+            "type": "range",
+            "min": 50,
+            "max": 100,
+            "values_seen": [
+              50,
+              100
+            ]
+          },
+          "points_to_dollar_ratio": {
+            "type": "range",
+            "min": 0.05,
+            "max": 0.15,
+            "values_seen": [
+              0.05,
+              0.1,
+              0.15
+            ]
+          }
+        }
+      },
+      "top_n_details": [
+        {
+          "scenario_id": "engagement_loyalty_0019",
+          "composite": 0.9485,
+          "volume": 6118.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "points_per_dollar": 2.0,
+            "redemption_threshold": 50,
+            "points_to_dollar_ratio": 0.1,
+            "_scenario_index": 19
+          }
+        },
+        {
+          "scenario_id": "engagement_loyalty_0001",
+          "composite": 0.8915,
+          "volume": 5993.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "points_per_dollar": 0.5,
+            "redemption_threshold": 50,
+            "points_to_dollar_ratio": 0.1,
+            "_scenario_index": 1
+          }
+        },
+        {
+          "scenario_id": "engagement_loyalty_0010",
+          "composite": 0.8687,
+          "volume": 5943.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "points_per_dollar": 1.0,
+            "redemption_threshold": 50,
+            "points_to_dollar_ratio": 0.1,
+            "_scenario_index": 10
+          }
+        },
+        {
+          "scenario_id": "engagement_loyalty_0018",
+          "composite": 0.8646,
+          "volume": 5934.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "points_per_dollar": 2.0,
+            "redemption_threshold": 50,
+            "points_to_dollar_ratio": 0.05,
+            "_scenario_index": 18
+          }
+        },
+        {
+          "scenario_id": "engagement_loyalty_0005",
+          "composite": 0.8614,
+          "volume": 5927.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "points_per_dollar": 0.5,
+            "redemption_threshold": 100,
+            "points_to_dollar_ratio": 0.15,
+            "_scenario_index": 5
+          }
+        }
+      ]
+    },
+    "engagement_retention": {
+      "workflow_type": "engagement",
+      "n_scenarios_scored": 27,
+      "top_scenario": "engagement_retention_0015",
+      "top_composite_score": 1.0,
+      "top_params": {
+        "retention_response_rate": 0.25,
+        "churned_threshold_days": 365,
+        "lapsed_threshold_days": 30,
+        "_scenario_index": 15
+      },
+      "recommendations": {
+        "retention_response_rate": {
+          "type": "range",
+          "min": 0.15,
+          "max": 0.4,
+          "values_seen": [
+            0.15,
+            0.25,
+            0.4
+          ]
+        },
+        "churned_threshold_days": {
+          "type": "range",
+          "min": 90,
+          "max": 365,
+          "values_seen": [
+            90,
+            180,
+            365
+          ]
+        },
+        "lapsed_threshold_days": {
+          "type": "fixed",
+          "value": 30
+        }
+      },
+      "recommendations_by_section": {
+        "engagement": {
+          "retention_response_rate": {
+            "type": "range",
+            "min": 0.15,
+            "max": 0.4,
+            "values_seen": [
+              0.15,
+              0.25,
+              0.4
+            ]
+          },
+          "churned_threshold_days": {
+            "type": "range",
+            "min": 90,
+            "max": 365,
+            "values_seen": [
+              90,
+              180,
+              365
+            ]
+          },
+          "lapsed_threshold_days": {
+            "type": "fixed",
+            "value": 30
+          }
+        }
+      },
+      "top_n_details": [
+        {
+          "scenario_id": "engagement_retention_0015",
+          "composite": 1.0,
+          "volume": 7312.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "retention_response_rate": 0.25,
+            "churned_threshold_days": 365,
+            "lapsed_threshold_days": 30,
+            "_scenario_index": 15
+          }
+        },
+        {
+          "scenario_id": "engagement_retention_0024",
+          "composite": 0.9268,
+          "volume": 6870.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "retention_response_rate": 0.4,
+            "churned_threshold_days": 365,
+            "lapsed_threshold_days": 30,
+            "_scenario_index": 24
+          }
+        },
+        {
+          "scenario_id": "engagement_retention_0003",
+          "composite": 0.922,
+          "volume": 6841.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "retention_response_rate": 0.15,
+            "churned_threshold_days": 180,
+            "lapsed_threshold_days": 30,
+            "_scenario_index": 3
+          }
+        },
+        {
+          "scenario_id": "engagement_retention_0021",
+          "composite": 0.9124,
+          "volume": 6783.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "retention_response_rate": 0.4,
+            "churned_threshold_days": 180,
+            "lapsed_threshold_days": 30,
+            "_scenario_index": 21
+          }
+        },
+        {
+          "scenario_id": "engagement_retention_0018",
+          "composite": 0.9086,
+          "volume": 6760.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "retention_response_rate": 0.4,
+            "churned_threshold_days": 90,
+            "lapsed_threshold_days": 30,
+            "_scenario_index": 18
+          }
+        }
+      ]
+    },
+    "engagement_campaign": {
+      "workflow_type": "engagement",
+      "n_scenarios_scored": 27,
+      "top_scenario": "engagement_campaign_0015",
+      "top_composite_score": 1.0,
+      "top_params": {
+        "base_email_response_rate": 0.08,
+        "vip_response_boost": 0.15,
+        "click_to_conversion_rate": 0.15,
+        "_scenario_index": 15
+      },
+      "recommendations": {
+        "base_email_response_rate": {
+          "type": "range",
+          "min": 0.03,
+          "max": 0.15,
+          "values_seen": [
+            0.03,
+            0.08,
+            0.15
+          ]
+        },
+        "vip_response_boost": {
+          "type": "range",
+          "min": 0.05,
+          "max": 0.15,
+          "values_seen": [
+            0.05,
+            0.1,
+            0.15
+          ]
+        },
+        "click_to_conversion_rate": {
+          "type": "range",
+          "min": 0.15,
+          "max": 0.4,
+          "values_seen": [
+            0.15,
+            0.25,
+            0.4
+          ]
+        }
+      },
+      "recommendations_by_section": {
+        "engagement": {
+          "base_email_response_rate": {
+            "type": "range",
+            "min": 0.03,
+            "max": 0.15,
+            "values_seen": [
+              0.03,
+              0.08,
+              0.15
+            ]
+          },
+          "vip_response_boost": {
+            "type": "range",
+            "min": 0.05,
+            "max": 0.15,
+            "values_seen": [
+              0.05,
+              0.1,
+              0.15
+            ]
+          },
+          "click_to_conversion_rate": {
+            "type": "range",
+            "min": 0.15,
+            "max": 0.4,
+            "values_seen": [
+              0.15,
+              0.25,
+              0.4
+            ]
+          }
+        }
+      },
+      "top_n_details": [
+        {
+          "scenario_id": "engagement_campaign_0015",
+          "composite": 1.0,
+          "volume": 6273.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "base_email_response_rate": 0.08,
+            "vip_response_boost": 0.15,
+            "click_to_conversion_rate": 0.15,
+            "_scenario_index": 15
+          }
+        },
+        {
+          "scenario_id": "engagement_campaign_0019",
+          "composite": 0.8893,
+          "volume": 5987.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "base_email_response_rate": 0.15,
+            "vip_response_boost": 0.05,
+            "click_to_conversion_rate": 0.25,
+            "_scenario_index": 19
+          }
+        },
+        {
+          "scenario_id": "engagement_campaign_0016",
+          "composite": 0.8769,
+          "volume": 5955.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "base_email_response_rate": 0.08,
+            "vip_response_boost": 0.15,
+            "click_to_conversion_rate": 0.25,
+            "_scenario_index": 16
+          }
+        },
+        {
+          "scenario_id": "engagement_campaign_0005",
+          "composite": 0.8754,
+          "volume": 5951.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "base_email_response_rate": 0.03,
+            "vip_response_boost": 0.1,
+            "click_to_conversion_rate": 0.4,
+            "_scenario_index": 5
+          }
+        },
+        {
+          "scenario_id": "engagement_campaign_0026",
+          "composite": 0.8695,
+          "volume": 5936.0,
+          "variety": 11.0,
+          "kpi": 364.67,
+          "params": {
+            "base_email_response_rate": 0.15,
+            "vip_response_boost": 0.15,
+            "click_to_conversion_rate": 0.4,
+            "_scenario_index": 26
+          }
+        }
+      ]
+    },
+    "inventory_demand": {
+      "workflow_type": "inventory",
+      "n_scenarios_scored": 27,
+      "top_scenario": "inventory_demand_0024",
+      "top_composite_score": 0.9911,
+      "top_params": {
+        "mean_daily_demand_multiplier": 2.0,
+        "daily_shrinkage_rate": 0.01,
+        "demand_variability": 0.2,
+        "_scenario_index": 24
+      },
+      "recommendations": {
+        "mean_daily_demand_multiplier": {
+          "type": "fixed",
+          "value": 2.0
+        },
+        "daily_shrinkage_rate": {
+          "type": "range",
+          "min": 0.001,
+          "max": 0.01,
+          "values_seen": [
+            0.001,
+            0.005,
+            0.01
+          ]
+        },
+        "demand_variability": {
+          "type": "range",
+          "min": 0.2,
+          "max": 0.4,
+          "values_seen": [
+            0.2,
+            0.4
+          ]
+        }
+      },
+      "recommendations_by_section": {
+        "unknown": {
+          "mean_daily_demand_multiplier": {
+            "type": "fixed",
+            "value": 2.0
+          },
+          "demand_variability": {
+            "type": "range",
+            "min": 0.2,
+            "max": 0.4,
+            "values_seen": [
+              0.2,
+              0.4
+            ]
+          }
+        },
+        "inventory": {
+          "daily_shrinkage_rate": {
+            "type": "range",
+            "min": 0.001,
+            "max": 0.01,
+            "values_seen": [
+              0.001,
+              0.005,
+              0.01
+            ]
+          }
+        }
+      },
+      "top_n_details": [
+        {
+          "scenario_id": "inventory_demand_0024",
+          "composite": 0.9911,
+          "volume": 12338.0,
+          "variety": 105.0,
+          "kpi": 100.0,
+          "params": {
+            "mean_daily_demand_multiplier": 2.0,
+            "daily_shrinkage_rate": 0.01,
+            "demand_variability": 0.2,
+            "_scenario_index": 24
+          }
+        },
+        {
+          "scenario_id": "inventory_demand_0021",
+          "composite": 0.975,
+          "volume": 12554.0,
+          "variety": 104.0,
+          "kpi": 100.0,
+          "params": {
+            "mean_daily_demand_multiplier": 2.0,
+            "daily_shrinkage_rate": 0.005,
+            "demand_variability": 0.2,
+            "_scenario_index": 21
+          }
+        },
+        {
+          "scenario_id": "inventory_demand_0025",
+          "composite": 0.9267,
+          "volume": 10773.0,
+          "variety": 105.0,
+          "kpi": 100.0,
+          "params": {
+            "mean_daily_demand_multiplier": 2.0,
+            "daily_shrinkage_rate": 0.01,
+            "demand_variability": 0.4,
+            "_scenario_index": 25
+          }
+        },
+        {
+          "scenario_id": "inventory_demand_0018",
+          "composite": 0.8789,
+          "volume": 9611.0,
+          "variety": 105.0,
+          "kpi": 100.0,
+          "params": {
+            "mean_daily_demand_multiplier": 2.0,
+            "daily_shrinkage_rate": 0.001,
+            "demand_variability": 0.2,
+            "_scenario_index": 18
+          }
+        },
+        {
+          "scenario_id": "inventory_demand_0022",
+          "composite": 0.8727,
+          "volume": 9461.0,
+          "variety": 105.0,
+          "kpi": 100.0,
+          "params": {
+            "mean_daily_demand_multiplier": 2.0,
+            "daily_shrinkage_rate": 0.005,
+            "demand_variability": 0.4,
+            "_scenario_index": 22
+          }
+        }
+      ]
+    },
+    "inventory_policy": {
+      "workflow_type": "inventory",
+      "n_scenarios_scored": 27,
+      "top_scenario": "inventory_policy_0011",
+      "top_composite_score": 0.9105,
+      "top_params": {
+        "reorder_point_multiplier": 1.5,
+        "safety_stock_days": 3,
+        "order_quantity_multiplier": 2.0,
+        "_scenario_index": 11
+      },
+      "recommendations": {
+        "reorder_point_multiplier": {
+          "type": "range",
+          "min": 1.0,
+          "max": 2.0,
+          "values_seen": [
+            1.0,
+            1.5,
+            2.0
+          ]
+        },
+        "safety_stock_days": {
+          "type": "range",
+          "min": 3,
+          "max": 14,
+          "values_seen": [
+            3,
+            7,
+            14
+          ]
+        },
+        "order_quantity_multiplier": {
+          "type": "range",
+          "min": 1.0,
+          "max": 2.0,
+          "values_seen": [
+            1.0,
+            1.5,
+            2.0
+          ]
+        }
+      },
+      "recommendations_by_section": {
+        "unknown": {
+          "reorder_point_multiplier": {
+            "type": "range",
+            "min": 1.0,
+            "max": 2.0,
+            "values_seen": [
+              1.0,
+              1.5,
+              2.0
+            ]
+          },
+          "safety_stock_days": {
+            "type": "range",
+            "min": 3,
+            "max": 14,
+            "values_seen": [
+              3,
+              7,
+              14
+            ]
+          },
+          "order_quantity_multiplier": {
+            "type": "range",
+            "min": 1.0,
+            "max": 2.0,
+            "values_seen": [
+              1.0,
+              1.5,
+              2.0
+            ]
+          }
+        }
+      },
+      "top_n_details": [
+        {
+          "scenario_id": "inventory_policy_0011",
+          "composite": 0.9105,
+          "volume": 9071.0,
+          "variety": 104.0,
+          "kpi": 100.0,
+          "params": {
+            "reorder_point_multiplier": 1.5,
+            "safety_stock_days": 3,
+            "order_quantity_multiplier": 2.0,
+            "_scenario_index": 11
+          }
+        },
+        {
+          "scenario_id": "inventory_policy_0019",
+          "composite": 0.8964,
+          "volume": 8856.0,
+          "variety": 104.0,
+          "kpi": 100.0,
+          "params": {
+            "reorder_point_multiplier": 2.0,
+            "safety_stock_days": 3,
+            "order_quantity_multiplier": 1.5,
+            "_scenario_index": 19
+          }
+        },
+        {
+          "scenario_id": "inventory_policy_0006",
+          "composite": 0.882,
+          "volume": 8637.0,
+          "variety": 104.0,
+          "kpi": 100.0,
+          "params": {
+            "reorder_point_multiplier": 1.0,
+            "safety_stock_days": 14,
+            "order_quantity_multiplier": 1.0,
+            "_scenario_index": 6
+          }
+        },
+        {
+          "scenario_id": "inventory_policy_0018",
+          "composite": 0.8726,
+          "volume": 8493.0,
+          "variety": 104.0,
+          "kpi": 100.0,
+          "params": {
+            "reorder_point_multiplier": 2.0,
+            "safety_stock_days": 3,
+            "order_quantity_multiplier": 1.0,
+            "_scenario_index": 18
+          }
+        },
+        {
+          "scenario_id": "inventory_policy_0005",
+          "composite": 0.8507,
+          "volume": 9074.0,
+          "variety": 103.0,
+          "kpi": 100.0,
+          "params": {
+            "reorder_point_multiplier": 1.0,
+            "safety_stock_days": 7,
+            "order_quantity_multiplier": 2.0,
+            "_scenario_index": 5
+          }
+        }
+      ]
+    }
+  }
+}

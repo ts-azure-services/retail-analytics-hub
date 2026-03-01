@@ -408,6 +408,18 @@ class SweepRunner:
             workflow.load_product_catalog(products)
         workflow.load_real_customers()
 
+        # Load inventory into resource registry so stock can be reserved
+        try:
+            conn = persistence.postgres._conn
+            inv_rows = conn.execute(
+                "SELECT sku, location_id, quantity_on_hand, reorder_point FROM inventory"
+            ).fetchall()
+            for sku, location, qty, rop in inv_rows:
+                resources.inventory.register_sku(sku, location, qty, rop)
+            logger.info(f"Registered {len(inv_rows)} inventory items for omnichannel scenario")
+        except Exception as e:
+            logger.warning(f"Could not load inventory for omnichannel scenario: {e}")
+
         # Start processes
         env.process(workflow.online_arrival_process())
         env.process(workflow.in_store_arrival_process())
@@ -498,10 +510,17 @@ class SweepRunner:
                 ss_days,
                 supplier_id,
                 float(lead_time),
+                persist=False,  # Don't overwrite seed data with multiplied values
             )
 
         # Start monitoring with demand from config
         demand_multiplier = params.get("mean_daily_demand_multiplier", 1.0)
+        demand_variability = params.get("demand_variability", 0.3)
+        # Higher demand_variability → wider demand quantity range per transaction
+        config.inventory.demand_qty_max = max(
+            config.inventory.demand_qty_min + 1,
+            int(config.inventory.demand_qty_max * (0.5 + demand_variability * 2)),
+        )
         for sku, location, *_ in policies:
             base_demand = random.uniform(ic.daily_demand_min, ic.daily_demand_max)
             workflow.start_monitoring(sku, location, base_demand * demand_multiplier)
@@ -601,6 +620,18 @@ class SweepRunner:
             "avg_clv": avg_clv,
         }
 
+    # Parameters consumed directly by scenario methods (not via config fields)
+    _SCENARIO_PARAMS = {
+        "reorder_point_multiplier",
+        "safety_stock_days",
+        "order_quantity_multiplier",
+        "mean_daily_demand_multiplier",
+        "supplier_reliability",
+        "mean_lead_time_days",
+        "lead_time_variability",
+        "demand_variability",
+    }
+
     def _apply_overrides(
         self, config: SimulationConfig, params: Dict[str, Any]
     ) -> None:
@@ -610,7 +641,7 @@ class SweepRunner:
         and sla sections for matching field names.
         """
         for param_name, value in params.items():
-            if param_name.startswith("_"):
+            if param_name.startswith("_") or param_name in self._SCENARIO_PARAMS:
                 continue
             applied = False
             for section_name in [

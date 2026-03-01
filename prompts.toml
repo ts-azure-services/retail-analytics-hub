@@ -111,22 +111,29 @@ Generate docs/data.md documenting the full data model. Structure:
 
 1. **Introduction** — One paragraph: simulation persists to local DuckDB files (local_postgres.duckdb and local_cosmos.duckdb) that mirror cloud schemas (Azure PostgreSQL, CosmosDB).
 
-2. **Seed Data (Operational Foundation)** — Tables created by seed scripts before simulation runs. Organize into three sub-sections, each as a table with columns (Table, Database, Description):
-   - Core Entities: customers, products, inventory, suppliers, replenishment_policy
-   - Transactional Tables: orders, order_items, payments, purchase_orders, purchase_order_lines, returns
-   - Customer & Engagement Tables: loyalty_account, customer_preferences, customer_stats, customer_scores, points_transactions, support_tickets, customer_purchase_history, recommendations_cache
-   - Document Collections (CosmosDB-style): as a separate table with columns (Collection, Database, Description) listing Customers, Carts, WorkflowEvents, FulfillmentState, InventoryEvents, EngagementEvents
+2. **Table Lifecycle Overview** — Explain that tables come alive at different pipeline stages and not all tables are populated at seed time. Include three ASCII-art reference charts:
+   - **Pipeline stage diagram**: A vertical flow showing make seed → make simulate → make sweep → make train, with a brief note on what happens to tables at each stage.
+   - **PostgreSQL tables — when they populate**: An ASCII grid with columns for seed/simulate-sweep/train and rows for every Postgres table, grouped into Core Entities, Transactional, Customer & Engagement, and Training Tables (ML). Use symbols: * = seeded with data, - = schema only (empty), I = INSERT, U = UPDATE, R = read by training pipeline.
+   - **CosmosDB collections — when they populate**: Same ASCII grid format for the six Cosmos collections.
+   - **Training tables by workflow**: An ASCII diagram showing which workflow populates which training tables and which ML models they feed. Show the three workflows (Omnichannel, Inventory, Engagement) plus the ScenarioTracker, each with their training tables and downstream ML models.
+   - Add a paragraph clarifying that "training tables" are populated BY simulation sweeps FOR ML training — they are not outputs of ML training itself.
 
-3. **Simulation Data (ML Training)** — Tables created by simulation runs and sweeps. Organize into sub-sections:
-   - Scenario Tracking: simulation_scenarios table with its purpose
-   - Omnichannel Tables: table with columns (Table, ML Models Served, Key Columns) for customer_journeys, order_metrics, hourly_demand
-   - Inventory Tables: same format for inventory_events, supplier_deliveries, inventory_snapshots
-   - Engagement Tables: same format for customer_snapshots, campaign_interactions, engagement_events
+3. **Seed Data (Operational Foundation)** — Tables created by seed scripts (seed_local.py). Organize into four sub-sections, each as a markdown table. Each table must include a Seed State column indicating whether rows are seeded or the table is created empty (schema only):
+   - Core Entities (seeded with data): customers (500), products (50), suppliers (50), inventory (250 = 50 SKUs x 5 locations), replenishment_policy (~150). Columns: Table, Database, Records, Description.
+   - Transactional Tables (partially seeded): orders (500 seed), order_items (~1500-2500 seed), payments (empty), purchase_orders (empty), purchase_order_lines (empty), returns (empty). Columns: Table, Database, Seed State, Description.
+   - Customer & Engagement Tables (mostly schema-only at seed): loyalty_account, customer_preferences, customer_stats, customer_scores, points_transactions, support_tickets, recommendations_cache are all empty at seed; customer_purchase_history is seeded. Columns: Table, Database, Seed State, Description.
+   - Document Collections (CosmosDB): Customers (500 docs), Carts (80 docs), WorkflowEvents (50 docs) are seeded; FulfillmentState, InventoryEvents, EngagementEvents are empty. Columns: Collection, Seed State, Description.
+
+4. **Simulation Data (Training Tables)** — Tables created by local_backend.py (_ensure_ml_tables) when the simulation backend initializes. Populated during sweep runs. Organize into sub-sections:
+   - Scenario Tracking: simulation_scenarios table — one row per swept scenario with metadata and aggregate KPIs. Columns: Table, Database, Populated By, Description.
+   - Omnichannel Training Tables: note they are populated by MetricsCollector.persist_to_db(). Table with columns (Table, ML Models Served, Key Columns) for customer_journeys, order_metrics, hourly_demand.
+   - Inventory Training Tables: note they are populated by InventoryReplenishmentWorkflow.persist_ml_data(). Same format for inventory_events, supplier_deliveries, inventory_snapshots.
+   - Engagement Training Tables: note they are populated by CustomerEngagementWorkflow.persist_ml_data(). Same format for customer_snapshots, campaign_interactions, engagement_events.
 
 Constraints:
 - No Makefile commands or usage instructions
 - No output samples or query examples
-- No code snippets
-- Use tables as the primary format for listing schema information
+- No code snippets (ASCII charts are not code snippets — they are reference diagrams)
+- Use markdown tables for schema listings and ASCII art for lifecycle/flow diagrams
 - Verify table/collection names against seed_local.py and local_backend.py
 """

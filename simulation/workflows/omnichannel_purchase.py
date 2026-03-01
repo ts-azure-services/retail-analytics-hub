@@ -372,9 +372,9 @@ class OmnichannelPurchaseWorkflow:
         self.metrics.record_fulfillment_complete(order_id, self.env.now, self.env.now)
         
         logger.info(f"Order {order_id} COMPLETED for customer {customer_id} (in-store)")
-        
+
         # Optionally model returns
-        yield from self._handle_potential_return(order_id, basket)
+        yield from self._handle_potential_return(order_id, basket, customer_id)
     
     def _online_journey(self, customer_id: str, arrival_time: float):
         """Online customer journey with web telemetry"""
@@ -456,9 +456,9 @@ class OmnichannelPurchaseWorkflow:
         
         # 5. FULFILLMENT PROCESS
         yield from self._online_fulfillment_process(order_id, basket, warehouse_location)
-        
+
         # Optionally model returns
-        yield from self._handle_potential_return(order_id, basket)
+        yield from self._handle_potential_return(order_id, basket, customer_id)
     
     def _bopis_journey(self, customer_id: str, arrival_time: float):
         """BOPIS (Buy Online, Pick up In Store) journey"""
@@ -517,9 +517,9 @@ class OmnichannelPurchaseWorkflow:
         
         # 5. STORE FULFILLMENT (prepare for pickup)
         yield from self._bopis_fulfillment_process(order_id, basket, pickup_store, customer_id)
-        
+
         # Optionally model returns
-        yield from self._handle_potential_return(order_id, basket)
+        yield from self._handle_potential_return(order_id, basket, customer_id)
     
     # ========== HELPER FUNCTIONS ==========
     
@@ -886,7 +886,8 @@ class OmnichannelPurchaseWorkflow:
         
         logger.info(f"Order {order_id} COMPLETED by {customer_id} (BOPIS pickup)")
     
-    def _handle_potential_return(self, order_id: int, basket: List[Dict]):
+    def _handle_potential_return(self, order_id: int, basket: List[Dict],
+                                customer_id: str = None):
         """Handle potential product returns with proper event emission"""
         # Determine return probability based on category
         will_return = False
@@ -896,10 +897,10 @@ class OmnichannelPurchaseWorkflow:
             if random.random() < return_rate:
                 will_return = True
                 break
-        
+
         if not will_return:
             return
-        
+
         # Delay until return
         return_delay_days = random.uniform(
             self.config.distributions.return_window_min,
@@ -907,20 +908,38 @@ class OmnichannelPurchaseWorkflow:
         )
         return_delay_minutes = return_delay_days * 24 * 60
         yield self.env.timeout(return_delay_minutes)
-        
+
         # Process return
         location = self.config.resources.locations[0]  # Return to warehouse
-        
+
         # Emit return event
         self._emit_order_event(order_id, 'return_initiated', {'location': location})
-        
+
         self.metrics.record_return(order_id)
         self.persistence.postgres.update_order_status(order_id, "returned", "returned")
-        
+
+        # Write to returns table
+        if customer_id:
+            refund_amount = sum(item['price'] * item['quantity'] for item in basket)
+            reason = random.choice(["wrong_size", "defective", "not_as_described",
+                                    "changed_mind", "arrived_late"])
+            # Pick first item SKU as representative (multi-item returns get one row)
+            sku = basket[0]['sku'] if basket else None
+            self.persistence.postgres.execute_query(
+                """
+                INSERT INTO returns
+                    (return_id, customer_id, order_id, sku, refund_amount,
+                     return_date, reason)
+                VALUES (nextval('returns_return_id_seq'), %s, %s, %s, %s,
+                        CURRENT_TIMESTAMP, %s)
+                """,
+                (customer_id, order_id, sku, refund_amount, reason)
+            )
+
         self._emit_order_event(order_id, 'returned', {'return_completed': datetime.now().isoformat()})
-        
+
         # Restock inventory
         for item in basket:
             self.resources.inventory.restock_inventory(item['sku'], location, item['quantity'])
-        
+
         logger.debug(f"[{self.env.now:.2f}] Order {order_id} returned")

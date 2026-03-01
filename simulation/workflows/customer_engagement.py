@@ -188,10 +188,24 @@ class CustomerEngagementWorkflow:
         }
         
         self.customers[customer_id] = customer_state
-        
-        # Skip database writes - customers already seeded in PostgreSQL
-        # This saves 3+ minutes during initialization (200 DB operations avoided)
-        logger.debug(f"Registered customer: {customer_id} (in-memory only)")
+
+        # Write customer preferences (categories + opt-in) to Postgres
+        if self.persistence.postgres:
+            self.persistence.postgres.execute_query(
+                """
+                INSERT INTO customer_preferences
+                    (customer_id, preferred_categories, marketing_opt_in,
+                     created_at, updated_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (customer_id) DO UPDATE SET
+                    preferred_categories = EXCLUDED.preferred_categories,
+                    marketing_opt_in = EXCLUDED.marketing_opt_in,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (customer_id, ','.join(preferred_categories), marketing_opt_in)
+            )
+
+        logger.debug(f"Registered customer: {customer_id}")
     
     def load_purchase_history_from_db(self):
         """Load purchase history from PostgreSQL and calculate RFM aggregates

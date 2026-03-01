@@ -4,7 +4,7 @@ Merge sweep-isolated DuckDB files back into the main databases.
 Reads each sweep's postgres/cosmos DuckDB from sweeps/ and merges
 ML/event tables into the main local_postgres.duckdb and local_cosmos.duckdb.
 
-Only merges ML training tables (not seed/transactional data).
+Merges ML training tables and workflow-generated transactional data.
 
 Usage:
     uv run seed-data/merge_sweeps.py
@@ -44,10 +44,28 @@ POSTGRES_ML_TABLES = [
     "campaign_interactions",
 ]
 
+# Transactional tables written by workflows during sweeps.
+# These use ON CONFLICT upserts (keyed by customer_id or PK), so merging
+# from the last sweep that touched each customer is safe.
+POSTGRES_TRANSACTIONAL_TABLES = [
+    "payments",
+    "purchase_orders",
+    "purchase_order_lines",
+    "customer_stats",
+    "customer_scores",
+    "loyalty_account",
+    "customer_preferences",
+    "points_transactions",
+    "support_tickets",
+    "returns",
+    "recommendations_cache",
+]
+
 COSMOS_EVENT_CONTAINERS = [
     "WorkflowEvents",
     "InventoryEvents",
     "EngagementEvents",
+    "FulfillmentState",
 ]
 
 
@@ -105,7 +123,8 @@ def merge_postgres_sweep(main_conn, sweep_path, dry_run=False):
     main_conn.execute(f"ATTACH '{sweep_path}' AS sweep (READ_ONLY)")
 
     total_merged = 0
-    for table in POSTGRES_ML_TABLES:
+    all_tables = POSTGRES_ML_TABLES + POSTGRES_TRANSACTIONAL_TABLES
+    for table in all_tables:
         if not sweep_has_table(main_conn, table):
             continue
 

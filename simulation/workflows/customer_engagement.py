@@ -292,6 +292,15 @@ class CustomerEngagementWorkflow:
             logger.error(f"Failed to load purchase history from PostgreSQL: {e}")
             logger.warning("Continuing without purchase history - all customers will be 'Needs Attention' segment")
     
+    def persist_customer_stats(self):
+        """Persist customer_stats for all customers with purchase history"""
+        count = 0
+        for customer_id, customer in self.customers.items():
+            if customer.get('purchase_count', 0) > 0:
+                self._update_customer_stats(customer_id)
+                count += 1
+        logger.info(f"Persisted customer_stats for {count} customers")
+
     def load_product_catalog(self, products: List[Tuple]):
         """Load product catalog for recommendations"""
         for product in products:
@@ -683,6 +692,15 @@ class CustomerEngagementWorkflow:
         
         return recommendations
     
+    def populate_recommendations_cache(self):
+        """Generate recommendations for all registered customers"""
+        count = 0
+        for customer_id in list(self.customers.keys()):
+            recs = self.generate_recommendations(customer_id)
+            if recs:
+                count += 1
+        logger.info(f"Generated recommendations for {count} customers")
+
     # ========== CAMPAIGN EXECUTION ==========
     
     def scheduled_campaign_process(self, campaign_id: str, segment: str, 

@@ -137,3 +137,65 @@ Constraints:
 - Use markdown tables for schema listings and ASCII art for lifecycle/flow diagrams
 - Verify table/collection names against seed_local.py and local_backend.py
 """
+
+[metrics-docs]
+prompt = """
+Generate docs/metrics.md defining all business metrics available from the simulation data. Use `make validate-local` output, shared/metrics.py, ml/data_prep.py, sweep/scenario_tracker.py, and the workflow source files to identify every computable metric. Structure:
+
+1. **Introduction** — One paragraph: this document defines all business metrics, organized into high-level retail KPIs and workflow-specific metrics. Each metric includes its computation method, source tables, and composite drivers that explain movement in the metric. Note that all metrics are computed from local_postgres.duckdb unless otherwise noted, and that local_cosmos.duckdb provides supplementary event-level detail.
+
+2. **High-Level Retail Metrics** — Eight executive-level KPIs that span the entire retail operation. For each metric include:
+   - A one-sentence definition
+   - **Computation** — SQL query examples showing how to derive the metric from the actual DuckDB tables (customer_journeys, orders, customer_snapshots, order_metrics, inventory, etc.)
+   - **Composite Drivers** — A markdown table with columns: Driver, Formula, Source Table, Why It Matters. Each driver is a sub-metric that explains why the headline metric moves up or down. Drivers must reference actual table columns.
+   - Optional **Drill-Down** note for further slicing dimensions
+
+   The eight metrics:
+   - **Total Revenue** — drivers: order volume, AOV, basket size, average unit price, channel mix, lost sales from stockouts, return-adjusted revenue
+   - **Total Customers** — drivers: traffic (arrivals), active/lapsed/churned from customer_snapshots, loyalty enrollment, by channel
+   - **Conversion Rate** — drivers: cart abandonment rate by reason, payment failure rate, queue balk rate, browsing duration, conversion by channel
+   - **Average Order Value** — drivers: basket size, unit price distribution, product category mix, channel effect
+   - **Customer Lifetime Value** — drivers: purchase frequency, AOV, customer tenure, loyalty points, value tier distribution, churn risk score
+   - **Return Rate** — drivers: returns by channel, return reason distribution, refund amount
+   - **Inventory Health (Composite)** — drivers: fill rate, total stockouts, avg days of supply, items below reorder point, on-order coverage, shrinkage rate
+   - **Fulfillment Performance (Composite)** — drivers: on-time delivery %, avg fulfillment duration, late orders, fulfillment by channel, payment success rate
+
+3. **Omnichannel Purchase Workflow Metrics** — Metrics specific to the shopping journey. Note primary source tables (customer_journeys, order_metrics, hourly_demand, orders, order_items, payments). Organize into sub-sections, each as a markdown table with columns: Metric, Formula, Source, Drivers.
+   - **Traffic & Demand** — arrival rate, hourly arrival/order/revenue/abandonment counts, avg basket size by hour (from hourly_demand)
+   - **Conversion Funnel** — conversion rate, conversion by channel, cart abandonment rate, payment failure rate, queue balk rate
+   - **Journey Timing** — avg browsing duration, avg/max queue wait time, avg checkout time, avg total journey time
+   - **Order & Revenue** — total orders, total revenue, AOV, revenue by channel, payment method distribution
+   - **Fulfillment** — on-time delivery %, avg fulfillment duration, fulfillment by channel, return rate
+
+4. **Inventory Replenishment Workflow Metrics** — Metrics specific to supply chain health. Note primary source tables (inventory_events, supplier_deliveries, inventory_snapshots, inventory, purchase_orders, purchase_order_lines, replenishment_policy). Organize into sub-sections:
+   - **Stock Levels** — total quantity on hand, quantity by location, items below reorder point, reserved inventory, on-order inventory, days of supply
+   - **Stockouts** — stockout count, stockout rate, stockout duration, stockout by SKU, stockout by location, fill rate. Include a **Stockout Composite Drivers (SimPy breakdown)** callout that explains the six interacting SimPy processes that produce stockouts: demand rate (inventory_snapshots.daily_demand), reorder point (replenishment_policy), safety stock, lead time (supplier_deliveries.actual_lead_time_days), supplier reliability (on_time, short_shipped flags), and shrinkage (inventory_events event_type='shrinkage').
+   - **Supplier Performance** — on-time delivery %, avg actual lead time, lead time variance, lead time accuracy (actual vs expected), short shipment rate, received vs ordered ratio, all metrics by supplier_id
+   - **Replenishment Efficiency** — total POs issued, PO status distribution, avg order quantity, reorder trigger rate, inventory turnover, shrinkage rate
+
+5. **Customer Engagement Workflow Metrics** — Metrics specific to CRM and loyalty. Note primary source tables (customer_snapshots, campaign_interactions, engagement_events, loyalty_account, points_transactions, support_tickets, customer_scores). Organize into sub-sections:
+   - **Customer Lifecycle** — active/lapsed/churn rates, retention rate, avg churn risk score, lifecycle state transitions. Include a **Churn Composite Drivers (SimPy breakdown)** callout explaining the six factors that accumulate churn_risk_score: days since last purchase, unresponsive count, total spend decline, campaign fatigue, service issues, loyalty disengagement.
+   - **Customer Segmentation** — value tier distribution, RFM segment distribution, avg spend by tier, avg purchase count by segment
+   - **Campaign Performance** — open rate, CTR, conversion rate, click-to-open rate, response by campaign type, response by segment, campaign fatigue. Include a **Campaign Response Composite Drivers (SimPy breakdown)** callout explaining the five factors: base response rate (config), value tier boost, RFM segment, fatigue decay from unresponsive_count, days since last engagement.
+   - **Loyalty Program** — enrollment rate, avg points balance, lifetime points earned, points issued vs redeemed, redemption rate, tier distribution, transaction reasons
+   - **Service & Support** — total tickets, open tickets, resolution rate, avg resolution time, avg satisfaction rating, tickets by issue type, satisfaction by issue type
+
+6. **ML Model Metrics** — Evaluation metrics produced during model training. Organize into sub-sections:
+   - **Classification Models** — Table of metrics (AUC-ROC, Accuracy, Precision, Recall, F1) with one-sentence descriptions. Then a table mapping each classification model (Conversion, Stockout, Churn, Campaign Response) to its target, AUC interpretation, and key features ranked by importance.
+   - **Regression Models** — Table of metrics (MAE, RMSE, R², MAPE) with descriptions. Then a table mapping each regression model (Order Value, Fulfillment, Lead Time, CLV) to its target, unit, and key features.
+   - **Time Series Model** — One row for Demand Forecast (Prophet): target, method, metrics (MAE, RMSE, MAPE). Note Prophet decomposition into trend and seasonality.
+   - **Feature Importance as Metric Drivers** — One paragraph explaining that model.get_feature_importance() scores quantify which simulation parameters most influence predictions, connecting ML output back to the composite drivers defined earlier.
+
+7. **Scenario-Level Aggregate Metrics** — Table listing the pre-computed KPI columns in simulation_scenarios (total_customers, total_orders, total_revenue, conversion_rate, stockout_count, fill_rate, avg_lead_time, churn_rate, campaign_response_rate, avg_clv) with types and descriptions. Note these are the same metrics above, pre-aggregated per scenario for sweep comparison.
+
+8. **Cross-Workflow Metric Relationships** — An ASCII diagram showing how the three workflows interact: omnichannel orders drive inventory demand depletion and customer purchase history; inventory stockouts reduce omnichannel conversion; engagement churn reduces future traffic; campaign conversions drive incremental orders. Follow with a markdown table: Upstream Metric, Downstream Impact, Mechanism.
+
+Constraints:
+- SQL examples should use actual column and table names from the DuckDB schema (verify with `make validate-local` output)
+- Composite driver tables must reference real columns, not invented ones
+- SimPy breakdown callouts must trace back to config parameters or simulation process logic
+- No Makefile commands or usage instructions
+- Prefer markdown tables over prose for metric listings
+- Use SQL code blocks only for computation examples in the High-Level section; workflow-specific sections should use formula shorthand in tables
+- Cross-reference source tables from docs/data.md
+"""

@@ -584,11 +584,13 @@ class SweepRunner:
 
         # Load purchase history
         workflow.load_purchase_history_from_db()
+        workflow.persist_customer_stats()
 
         # Load products
         products = self._load_product_catalog(persistence)
         if products:
             workflow.load_product_catalog(products)
+            workflow.populate_recommendations_cache()
 
         # Start campaigns (reads response rates etc. from config.engagement)
         workflow.start_campaigns()

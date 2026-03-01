@@ -84,9 +84,9 @@ class DistributionConfig:
         "Food": 0.03
     })
     
-    # Return time window (days) - uniform distribution
-    return_window_min: float = 1.0
-    return_window_max: float = 30.0
+    # Return time window (hours) - uniform distribution
+    return_window_min: float = 0.5
+    return_window_max: float = 8.0
     
     # Fulfillment delay parameters (days) - uniform distribution
     fulfillment_delay_min: float = 1.0

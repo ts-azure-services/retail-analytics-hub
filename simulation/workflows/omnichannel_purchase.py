@@ -902,11 +902,11 @@ class OmnichannelPurchaseWorkflow:
             return
 
         # Delay until return
-        return_delay_days = random.uniform(
+        return_delay_hours = random.uniform(
             self.config.distributions.return_window_min,
             self.config.distributions.return_window_max
         )
-        return_delay_minutes = return_delay_days * 24 * 60
+        return_delay_minutes = return_delay_hours * 60
         yield self.env.timeout(return_delay_minutes)
 
         # Process return

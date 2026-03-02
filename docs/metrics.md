@@ -17,11 +17,7 @@ The top-line metric for the business.
 **Computation:**
 
 ```sql
--- From completed customer journeys (simulation/sweep data)
 SELECT SUM(total_amount) FROM customer_journeys WHERE completed = TRUE;
-
--- From seed orders (transactional data)
-SELECT SUM(total_amount) FROM orders WHERE status = 'completed';
 ```
 
 **Composite Drivers:**
@@ -33,8 +29,6 @@ SELECT SUM(total_amount) FROM orders WHERE status = 'completed';
 | Basket Size | `AVG(basket_size) WHERE completed = TRUE` | `customer_journeys` | Larger baskets directly increase order value |
 | Average Unit Price | `SUM(total_amount) / SUM(basket_size)` | `customer_journeys` | Product mix shift toward premium items raises AOV |
 | Channel Mix | `SUM(total_amount) GROUP BY channel` | `customer_journeys` | Online vs in-store vs BOPIS have different AOVs and conversion rates |
-| Lost Sales from Stockouts | `SUM(quantity_change) WHERE stockout_occurred = TRUE` | `inventory_events` | Revenue that could not be captured due to out-of-stock |
-| Return-Adjusted Revenue | `revenue - SUM(refund_amount)` | `returns` | Returns reduce net revenue; high return rate erodes margin |
 
 **Drill-Down:** Revenue by channel, by hour of day (`hourly_demand.revenue`), by product category (`order_items` joined to `products`).
 
@@ -45,24 +39,19 @@ SELECT SUM(total_amount) FROM orders WHERE status = 'completed';
 **Computation:**
 
 ```sql
--- Master customer count
-SELECT COUNT(*) FROM customers;
-
--- Active customers (from engagement snapshots)
-SELECT COUNT(DISTINCT customer_id) FROM customer_snapshots
-WHERE activity_state = 'active';
+SELECT COUNT(DISTINCT customer_id) FROM customer_snapshots;
 ```
 
 **Composite Drivers:**
 
 | Driver | Formula | Source Table |
 |--------|---------|-------------|
-| Arrivals (Traffic) | `COUNT(*)` | `customer_journeys` |
 | Active Customers | `COUNT(*) WHERE activity_state = 'active'` | `customer_snapshots` |
 | Lapsed Customers | `COUNT(*) WHERE activity_state = 'lapsed'` | `customer_snapshots` |
 | Churned Customers | `COUNT(*) WHERE churned = TRUE` | `customer_snapshots` |
-| Loyalty Enrolled | `COUNT(*)` | `loyalty_account` |
-| Customers by Channel | `COUNT(*) GROUP BY channel` | `customer_journeys` |
+| By Value Tier | `COUNT(*) GROUP BY value_tier` | `customer_snapshots` |
+| By RFM Segment | `COUNT(*) GROUP BY rfm_segment` | `customer_snapshots` |
+| Avg Churn Risk Score | `AVG(churn_risk_score)` | `customer_snapshots` |
 
 ---
 
@@ -117,13 +106,7 @@ Total spend per customer over their lifetime, a forward-looking indicator of cus
 **Computation:**
 
 ```sql
--- From engagement snapshots (per simulation scenario)
 SELECT AVG(total_spend) FROM customer_snapshots WHERE total_spend > 0;
-
--- From purchase history (seed data)
-SELECT customer_id, SUM(line_total) AS lifetime_value
-FROM customer_purchase_history
-GROUP BY customer_id;
 ```
 
 **Composite Drivers:**
@@ -144,11 +127,7 @@ GROUP BY customer_id;
 **Computation:**
 
 ```sql
--- From order metrics (simulation data)
 SELECT COUNT(CASE WHEN returned THEN 1 END) * 100.0 / COUNT(*) FROM order_metrics;
-
--- From returns table (transactional)
-SELECT COUNT(*) FROM returns;
 ```
 
 **Composite Drivers:**
@@ -156,39 +135,9 @@ SELECT COUNT(*) FROM returns;
 | Driver | Formula | Source Table |
 |--------|---------|-------------|
 | Returns by Channel | `COUNT(WHERE returned) GROUP BY channel` | `order_metrics` |
-| Return Reason Distribution | `COUNT(*) GROUP BY reason` | `returns` |
-| Refund Amount | `SUM(refund_amount)` | `returns` |
-
----
-
-### 7. Inventory Health (Composite)
-
-An aggregate view of whether the supply chain can meet demand.
-
-**Composite Drivers:**
-
-| Driver | Formula | Source Table |
-|--------|---------|-------------|
-| Fill Rate | `1 - (stockout_events / total_demand_events)` | `inventory_events` |
-| Total Stockouts | `COUNT(WHERE stockout_occurred = TRUE)` | `inventory_events` |
-| Avg Days of Supply | `AVG(quantity_on_hand / daily_demand)` | `inventory_snapshots` |
-| Items Below Reorder Point | `COUNT(WHERE quantity_on_hand <= reorder_point)` | `inventory` |
-| On-Order Coverage | `SUM(on_order_qty)` | `inventory` |
-| Shrinkage Rate | `SUM(quantity_change WHERE event_type = 'shrinkage') / total_stock` | `inventory_events` |
-
----
-
-### 8. Fulfillment Performance (Composite)
-
-**Composite Drivers:**
-
-| Driver | Formula | Source Table |
-|--------|---------|-------------|
-| On-Time Delivery % | `COUNT(WHERE on_time) / COUNT(*)` | `order_metrics` |
-| Avg Fulfillment Duration | `AVG(fulfillment_duration)` | `order_metrics` |
-| Late Orders | `COUNT(WHERE on_time = FALSE)` | `order_metrics` |
-| Fulfillment by Channel | `AVG(fulfillment_duration) GROUP BY channel` | `order_metrics` |
-| Payment Success Rate | `COUNT(WHERE status = 'completed') / COUNT(*)` | `payments` |
+| Returns by Day of Week | `COUNT(WHERE returned) GROUP BY day_of_week` | `order_metrics` |
+| Late Delivery Effect | `return_rate WHERE on_time = FALSE vs on_time = TRUE` | `order_metrics` |
+| Fulfillment Duration Effect | `AVG(fulfillment_duration) WHERE returned vs NOT returned` | `order_metrics` |
 
 ---
 
@@ -227,14 +176,14 @@ These metrics describe the customer shopping journey from arrival to fulfillment
 | **Avg Checkout Time** | `AVG(checkout_time)` | `customer_journeys` | Service time distribution: checkout_min/mode/max |
 | **Avg Total Journey Time** | `AVG(total_journey_time)` | `customer_journeys` | Sum of browse + queue + checkout + fulfillment |
 
-### Order & Revenue
+### Order Performance
 
 | Metric | Formula | Source | Drivers |
 |--------|---------|--------|---------|
 | **Total Orders** | `COUNT(*)` | `order_metrics` | Traffic × conversion |
-| **Total Revenue** | `SUM(total_amount) WHERE completed` | `customer_journeys` | Orders × AOV |
-| **AOV** | `AVG(total_amount) WHERE completed` | `customer_journeys` | Basket size × unit price |
-| **Revenue by Channel** | `SUM(total_amount) GROUP BY channel` | `customer_journeys` | Channel-specific traffic and AOV |
+| **Orders by Channel** | `COUNT(*) GROUP BY channel` | `order_metrics` | Channel-specific traffic and conversion |
+| **Orders by Time of Day** | `COUNT(*) GROUP BY order_hour` | `order_metrics` | Peak hours drive order volume |
+| **Avg Basket Size** | `AVG(basket_size) WHERE completed` | `customer_journeys` | Product mix and shopping behavior |
 | **Payment Method Distribution** | `COUNT(*) GROUP BY payment_method` | `payments` | credit_card, debit_card, paypal shares |
 
 ### Fulfillment
@@ -243,14 +192,29 @@ These metrics describe the customer shopping journey from arrival to fulfillment
 |--------|---------|--------|---------|
 | **On-Time Delivery %** | `COUNT(WHERE on_time) / COUNT(*)` | `order_metrics` | Fulfillment duration vs SLA (`delivery_sla_days`) |
 | **Avg Fulfillment Duration** | `AVG(fulfillment_duration)` | `order_metrics` | Picker/packer capacity, packing time distribution |
+| **Late Orders** | `COUNT(WHERE on_time = FALSE)` | `order_metrics` | Absolute count of orders missing SLA |
 | **Fulfillment by Channel** | `AVG(fulfillment_duration) GROUP BY channel` | `order_metrics` | BOPIS is fastest; online depends on warehouse capacity |
 | **Return Rate** | `COUNT(WHERE returned) / COUNT(*)` | `order_metrics` | Category-specific return rates from config |
+| **Payment Success Rate** | `COUNT(WHERE status = 'completed') / COUNT(*)` | `payments` | Gateway reliability and payment method mix |
 
 ---
 
 ## Inventory Replenishment Workflow Metrics
 
 These metrics describe supply chain health. Primary source tables: `inventory_events`, `supplier_deliveries`, `inventory_snapshots`, `inventory`, `purchase_orders`, `purchase_order_lines`, `replenishment_policy`.
+
+### Inventory Health (Composite)
+
+An aggregate view of whether the supply chain can meet demand. The key health indicators are detailed in the subsections below:
+
+| Indicator | Detailed In | Source Table |
+|-----------|-------------|-------------|
+| Fill Rate | Stockouts | `inventory_events` |
+| Total Stockouts | Stockouts | `inventory_events` |
+| Avg Days of Supply | Stock Levels | `inventory_snapshots` |
+| Items Below Reorder Point | Stock Levels | `inventory` |
+| On-Order Coverage | Stock Levels | `inventory` |
+| Shrinkage Rate | Replenishment Efficiency | `inventory_events` |
 
 ### Stock Levels
 

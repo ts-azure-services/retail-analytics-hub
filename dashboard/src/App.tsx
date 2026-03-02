@@ -3,13 +3,12 @@ import { useKV } from '@github/spark/hooks'
 import { NavigationSidebar, TabId } from './components/NavigationSidebar'
 import { DashboardView } from './components/DashboardView'
 import { MetricDetailView } from './components/MetricDetailView'
-import { 
-  generateMockMetrics, 
-  generateOmnichannelMetrics, 
+import {
+  generateMockMetrics,
+  generateOmnichannelMetrics,
   generateCustomerEngagementMetrics,
   generateInventoryReplenishmentMetrics,
-  simulateMetricUpdate, 
-  generateMetricBreakdown 
+  generateMetricBreakdown
 } from './lib/mock-data'
 import { MetricData, ChatMessage, MetricBreakdown } from './lib/types'
 import { Toaster, toast } from 'sonner'
@@ -110,16 +109,6 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setMainMetrics(currentMetrics => simulateMetricUpdate(currentMetrics))
-      setOmnichannelMetrics(currentMetrics => simulateMetricUpdate(currentMetrics))
-      setCustomerEngagementMetrics(currentMetrics => simulateMetricUpdate(currentMetrics))
-      setInventoryReplenishmentMetrics(currentMetrics => simulateMetricUpdate(currentMetrics))
-    }, 5000)
-
-    return () => clearInterval(interval)
-  }, [])
 
   const handleSendMessage = async (content: string) => {
     const userMessage: ChatMessage = {

@@ -328,6 +328,29 @@ clean-simulation: ## [util] Reset databases (cleanse + re-seed)
 	@make seed-all-with-history
 
 
+##@ Dashboard
+dashboard-install: ## [util] Install dashboard npm dependencies
+	@echo "📦 Installing dashboard dependencies..."
+	@cd dashboard && npm install
+	@echo "✓ Dashboard dependencies installed"
+
+dashboard-dev: ## [core] Start dashboard dev server (Vite)
+	@echo "🖥  Starting dashboard dev server..."
+	@cd dashboard && npm run dev
+
+dashboard-build: ## [core] Production build of the dashboard
+	@echo "🔨 Building dashboard..."
+	@cd dashboard && npm run build
+	@echo "✓ Dashboard built to dashboard/dist/"
+
+dashboard-preview: ## [util] Preview production build locally
+	@echo "👀 Previewing dashboard production build..."
+	@cd dashboard && npm run preview
+
+dashboard-audit-fix: ## [util] Fix npm audit vulnerabilities
+	@cd dashboard && npm audit fix
+
+
 ##@ Help
 help: ## Show this help message (grouped by sections)
 	@awk 'BEGIN {FS = ":.*?## "} \

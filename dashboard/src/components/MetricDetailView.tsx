@@ -47,9 +47,10 @@ export function MetricDetailView({
     }
   }
 
-  const isWarning = metric.id === 'inventory' && metric.trend === 'up'
-  const isPositive = metric.trend === 'up' && !isWarning
-  const isNegative = metric.trend === 'down' || isWarning
+  const inverted = metric.invertTrend ?? false
+  const isPositive = (metric.trend === 'up' && !inverted) || (metric.trend === 'down' && inverted)
+  const isNegative = (metric.trend === 'down' && !inverted) || (metric.trend === 'up' && inverted)
+  const isWarning = inverted && metric.trend === 'up'
 
   const chatInterface = (
     <ChatInterface

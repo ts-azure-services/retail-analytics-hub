@@ -8,6 +8,7 @@ export interface MetricData {
   trend: 'up' | 'down' | 'neutral'
   changePercent: number
   icon: string
+  invertTrend?: boolean
   sparklineData?: number[]
   forecast?: {
     value: number

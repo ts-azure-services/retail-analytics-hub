@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as d3 from 'd3'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { TrendUp, TrendDown, CurrencyDollar, ShoppingCart, ChartLine, Users, Package, Warning, Target } from '@phosphor-icons/react'
+import { TrendUp, TrendDown, CurrencyDollar, ShoppingCart, ChartLine, Users, Package, Warning, Target, Clock } from '@phosphor-icons/react'
 import { MetricData } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { motion } from 'framer-motion'
@@ -21,6 +21,7 @@ const iconMap = {
   cart: ShoppingCart,
   warning: Warning,
   package: Package,
+  clock: Clock,
 }
 
 export function MetricTile({ metric, onUpdate, onClick }: MetricTileProps) {
@@ -101,9 +102,10 @@ export function MetricTile({ metric, onUpdate, onClick }: MetricTileProps) {
   }
 
   const Icon = iconMap[metric.icon as keyof typeof iconMap] || ChartLine
-  const isWarning = metric.id === 'inventory' && metric.trend === 'up'
-  const isPositive = metric.trend === 'up' && !isWarning
-  const isNegative = metric.trend === 'down' || isWarning
+  const inverted = metric.invertTrend ?? false
+  const isPositive = (metric.trend === 'up' && !inverted) || (metric.trend === 'down' && inverted)
+  const isNegative = (metric.trend === 'down' && !inverted) || (metric.trend === 'up' && inverted)
+  const isWarning = inverted && metric.trend === 'up'
 
   return (
     <Card 

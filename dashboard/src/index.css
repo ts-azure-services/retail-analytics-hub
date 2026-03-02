@@ -1,0 +1,162 @@
+@import 'tailwindcss';
+@import "tw-animate-css";
+
+@layer base {
+  * {
+    @apply border-border
+  }
+}
+
+:root {
+  --background: oklch(1.00 0 0);
+  --foreground: oklch(0.10 0.005 240);
+
+  --card: oklch(1.00 0 0);
+  --card-foreground: oklch(0.10 0.005 240);
+  --popover: oklch(1.00 0 0);
+  --popover-foreground: oklch(0.10 0.005 240);
+
+  --primary: oklch(0.45 0.15 260);
+  --primary-foreground: oklch(1.00 0 0);
+  --secondary: oklch(0.98 0.002 240);
+  --secondary-foreground: oklch(0.35 0.008 240);
+  --muted: oklch(0.96 0.005 240);
+  --muted-foreground: oklch(0.45 0.01 240);
+  --accent: oklch(0.10 0.005 240);
+  --accent-foreground: oklch(1.00 0 0);
+  --destructive: oklch(0.55 0.22 25);
+  --destructive-foreground: oklch(1.00 0 0);
+
+  --success: oklch(0.6 0.15 145);
+  --success-foreground: oklch(1 0 0);
+  --warning: oklch(0.7 0.15 75);
+  --warning-foreground: oklch(0.2 0.02 250);
+
+  --border: oklch(0.88 0.01 240);
+  --input: oklch(1.00 0 0);
+  --ring: oklch(0.45 0.15 260);
+
+  --radius: 0.5rem;
+
+  --font-sans: Inter;
+
+  --font-serif: Noto Serif;
+
+  --font-mono: JetBrains Mono;
+
+  --chart-1: oklch(0.45 0.15 260);
+
+  --chart-2: oklch(0.10 0.005 240);
+
+  --chart-3: oklch(0.45 0.01 240);
+
+  --chart-4: oklch(0.35 0.008 240);
+
+  --chart-5: oklch(0.55 0.22 25);
+
+  --sidebar: oklch(0.96 0.005 240);
+
+  --sidebar-foreground: oklch(0.10 0.005 240);
+
+  --sidebar-primary: oklch(0.45 0.15 260);
+
+  --sidebar-primary-foreground: oklch(1.00 0 0);
+
+  --sidebar-accent: oklch(0.10 0.005 240);
+
+  --sidebar-accent-foreground: oklch(1.00 0 0);
+
+  --sidebar-border: oklch(0.88 0.01 240);
+
+  --sidebar-ring: oklch(0.45 0.15 260);
+
+  --shadow-color: oklch(0.10 0.005 240);
+
+  --shadow-opacity: 0.05;
+
+  --shadow-blur: 10px;
+
+  --shadow-spread: 0px;
+
+  --shadow-offset-x: 0px;
+
+  --shadow-offset-y: 4px;
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) * 1.5);
+  --radius-xl: calc(var(--radius) * 2);
+  --radius-2xl: calc(var(--radius) * 3);
+  --radius-full: 9999px;
+
+  --font-space: 'Space Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-inter: 'Inter', sans-serif;
+}
+
+body {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+}
+
+.font-space {
+  font-family: var(--font-space);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(0.65 0.18 210 / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px oklch(0.65 0.18 210 / 0);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+@keyframes number-pop {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-number-pop {
+  animation: number-pop 0.4s ease-out;
+}

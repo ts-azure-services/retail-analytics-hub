@@ -293,11 +293,24 @@ class CustomerEngagementWorkflow:
             logger.warning("Continuing without purchase history - all customers will be 'Needs Attention' segment")
     
     def persist_customer_stats(self):
-        """Persist customer_stats for all customers with purchase history"""
+        """Persist customer_stats for all customers with purchase history.
+
+        last_purchase_date is stored as simulation-time (float days) in memory
+        but the customer_stats table expects a TIMESTAMP, so convert before persisting.
+        """
         count = 0
+        now = datetime.now()
+        sim_now_days = self.env.now / 24.0
         for customer_id, customer in self.customers.items():
             if customer.get('purchase_count', 0) > 0:
+                # Convert simulation-time float back to a real datetime
+                sim_val = customer.get('last_purchase_date')
+                if sim_val is not None:
+                    days_ago = sim_now_days - sim_val
+                    customer['last_purchase_date'] = now - timedelta(days=max(days_ago, 0))
                 self._update_customer_stats(customer_id)
+                # Restore simulation-time value
+                customer['last_purchase_date'] = sim_val
                 count += 1
         logger.info(f"Persisted customer_stats for {count} customers")
 

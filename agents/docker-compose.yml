@@ -1,0 +1,48 @@
+services:
+  agent1-explainer:
+    build:
+      context: ..
+      dockerfile: agents/agent1_explainer/Dockerfile
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      - AGENT_MODEL=gpt-4o-mini
+      - AGENT_TEMPERATURE=0.3
+      - LOCAL_POSTGRES_DB=/data/local_postgres.duckdb
+      - LOCAL_COSMOS_DB=/data/local_cosmos.duckdb
+    volumes:
+      - ../local_postgres.duckdb:/data/local_postgres.duckdb:ro
+      - ../local_cosmos.duckdb:/data/local_cosmos.duckdb:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  agent2-narrative:
+    build:
+      context: ..
+      dockerfile: agents/agent2_narrative/Dockerfile
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    environment:
+      - AGENT_MODEL=gpt-4o
+      - AGENT_TEMPERATURE=0.3
+      - LOCAL_POSTGRES_DB=/data/local_postgres.duckdb
+      - LOCAL_COSMOS_DB=/data/local_cosmos.duckdb
+    volumes:
+      - ../local_postgres.duckdb:/data/local_postgres.duckdb:ro
+      - ../local_cosmos.duckdb:/data/local_cosmos.duckdb:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

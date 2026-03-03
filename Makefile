@@ -334,9 +334,26 @@ dashboard-install: ## [util] Install dashboard npm dependencies
 	@cd dashboard && npm install
 	@echo "✓ Dashboard dependencies installed"
 
-dashboard-dev: ## [core] Start dashboard dev server (Vite)
+dashboard-server: ## [core] Start dashboard API server (DuckDB → REST on port 3001)
+	@echo "🔌 Starting dashboard API server..."
+	@echo "   DB: local_postgres.duckdb → http://localhost:3001"
+	@cd dashboard && npm run dev:server
+
+dashboard-dev: ## [util] Start dashboard Vite frontend only (port 5173)
 	@echo "🖥  Starting dashboard dev server..."
 	@cd dashboard && npm run dev
+
+dashboard-start: ## [core] Start API server + Vite frontend together
+	@echo "🚀 Starting dashboard (API + frontend)..."
+	@echo "   API:      http://localhost:3001"
+	@echo "   Frontend: http://localhost:5173"
+	@cd dashboard && npm run dev:all
+
+dashboard-stop: ## [util] Stop dashboard server and frontend processes
+	@echo "🛑 Stopping dashboard processes..."
+	@lsof -ti :3001 | xargs kill 2>/dev/null || true
+	@lsof -ti :5173 | xargs kill 2>/dev/null || true
+	@echo "✓ Dashboard processes stopped"
 
 dashboard-build: ## [core] Production build of the dashboard
 	@echo "🔨 Building dashboard..."
@@ -349,6 +366,20 @@ dashboard-preview: ## [util] Preview production build locally
 
 dashboard-audit-fix: ## [util] Fix npm audit vulnerabilities
 	@cd dashboard && npm audit fix
+
+
+##@ Agents
+agents-build: ## [core] Build agent Docker images
+	docker compose -f agents/docker-compose.yml build
+
+agents-up: ## [core] Start agent services (detached)
+	docker compose -f agents/docker-compose.yml up -d
+
+agents-down: ## [core] Stop agent services
+	docker compose -f agents/docker-compose.yml down
+
+agents-logs: ## [util] Tail agent service logs
+	docker compose -f agents/docker-compose.yml logs -f
 
 
 ##@ Help

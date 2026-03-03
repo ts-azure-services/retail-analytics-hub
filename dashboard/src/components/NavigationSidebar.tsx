@@ -1,7 +1,7 @@
-import { ChartLine, Storefront, UsersThree, Package } from '@phosphor-icons/react'
+import { ChartLine, Storefront, UsersThree, Package, Newspaper } from '@phosphor-icons/react'
 import { cn } from '@/lib/utils'
 
-export type TabId = 'main' | 'omnichannel' | 'customer-engagement' | 'inventory-replenishment'
+export type TabId = 'digest' | 'main' | 'omnichannel' | 'customer-engagement' | 'inventory-replenishment'
 
 interface Tab {
   id: TabId
@@ -15,6 +15,11 @@ interface NavigationSidebarProps {
 }
 
 const tabs: Tab[] = [
+  {
+    id: 'digest',
+    label: 'Digest',
+    icon: <Newspaper className="w-5 h-5" weight="bold" />,
+  },
   {
     id: 'main',
     label: 'Main',

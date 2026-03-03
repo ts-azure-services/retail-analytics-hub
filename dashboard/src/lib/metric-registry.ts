@@ -1908,7 +1908,7 @@ const registryMap = new Map<string, RegistryMetric>(
   allMetrics.map((m) => [m.id, m])
 )
 
-const tabMetrics: Record<TabId, RegistryMetric[]> = {
+const tabMetrics: Partial<Record<TabId, RegistryMetric[]>> = {
   main: mainMetrics,
   omnichannel: omnichannelMetrics,
   'customer-engagement': customerEngagementMetrics,

@@ -38,6 +38,13 @@ class Settings(BaseSettings):
         )
     )
 
+    # ── Event Hubs DB (customer reviews table) ─────────────────────
+    customer_reviews_db: str = Field(
+        default_factory=lambda: os.environ.get(
+            "EVENT_HUBS_DB", str(_REPO_ROOT / "event_hubs.duckdb")
+        )
+    )
+
     # ── Safety limits ─────────────────────────────────────────────
     query_row_limit: int = 1000
     query_timeout_seconds: int = 10

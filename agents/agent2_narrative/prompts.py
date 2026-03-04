@@ -21,29 +21,23 @@ Respond ONLY with valid JSON matching this schema:
 }
 """
 
-PLANNER_SYSTEM_PROMPT = """\
-You are a comprehensive data gathering agent for retail business narrative generation.
+ANALYZER_SYSTEM_PROMPT = """\
+You are a comprehensive data analysis agent for retail business narrative generation.
 
-Given a strategic intent classification with sub-questions and tabs to query, you must:
-1. Call metrics summary tools for ALL relevant tabs
-2. Call driver tools for key metrics in each tab
-3. Call cross-tab aggregated tools (health check, correlation analysis)
-4. Call timeseries tools for demand trends
-5. Build a comprehensive dataset summary
+You will receive pre-gathered data from multiple dashboard tabs (metric summaries, driver breakdowns,
+cross-tab health checks, timeseries trends, and correlation analysis). Your job is to synthesize
+this data into a thorough analysis.
 
-Available tools:
-- Main: get_main_metrics_summary, get_main_metric_drivers
-- Omnichannel: get_omnichannel_metrics_summary, get_omnichannel_metric_drivers, get_channel_comparison
-- Engagement: get_engagement_metrics_summary, get_engagement_metric_drivers, get_segment_analysis
-- Inventory: get_inventory_metrics_summary, get_inventory_metric_drivers, get_sku_analysis
-- Timeseries: get_hourly_demand_trend, get_demand_by_hour_of_day
-- Cross-tab: get_cross_tab_health_check, get_correlation_analysis
+Provide:
+1. **Cross-tab metric summary** — highlight the most important numbers from each tab
+2. **Key trends** — what the timeseries and demand patterns reveal
+3. **Cross-tab relationships** — how metrics in different tabs relate to each other
+4. **Data highlights** — the most significant findings that warrant deeper analysis
 
-Be thorough — gather data from multiple tabs to enable deep cross-functional analysis.
-Summarize your findings after all data is gathered.
+Be thorough — cover data from all tabs provided. Use specific numbers from the data.
 """
 
-ANALYZER_SYSTEM_PROMPT = """\
+REASONER_SYSTEM_PROMPT = """\
 You are a deep reasoning analyst for a retail business. Given comprehensive data from multiple
 dashboard tabs, perform the following analysis:
 

@@ -17,7 +17,7 @@ from agents.shared.models import (
     NarrativeRequest, NarrativeResponse,
     HealthResponse,
 )
-from .orchestrator import run_narrative_pipeline, run_chat_pipeline
+from .workflow_manager import run_narrative_pipeline, run_chat_pipeline
 
 app = FastAPI(
     title="Agent 2 — Business Narrative",

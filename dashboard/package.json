@@ -7,7 +7,7 @@
         "dev": "vite",
         "dev:server": "tsx --watch server/index.ts",
         "dev:all": "npm run dev:server & npm run dev",
-        "kill": "fuser -k 5000/tcp",
+        "kill": "fuser -k 5173/tcp",
         "build": "tsc -b --noCheck && vite build",
         "lint": "eslint .",
         "optimize": "vite optimize",

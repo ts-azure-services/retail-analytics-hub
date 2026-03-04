@@ -7,9 +7,10 @@ import {
   generateOmnichannelMetrics,
   generateCustomerEngagementMetrics,
   generateInventoryReplenishmentMetrics,
+  generateCustomerReviewsMetrics,
 } from '../lib/metric-registry'
 
-type TabId = 'main' | 'omnichannel' | 'customer-engagement' | 'inventory-replenishment'
+type TabId = 'main' | 'omnichannel' | 'customer-engagement' | 'inventory-replenishment' | 'customer-reviews'
 
 function getSeedMetrics(tabId: TabId): MetricData[] {
   switch (tabId) {
@@ -17,6 +18,7 @@ function getSeedMetrics(tabId: TabId): MetricData[] {
     case 'omnichannel': return generateOmnichannelMetrics()
     case 'customer-engagement': return generateCustomerEngagementMetrics()
     case 'inventory-replenishment': return generateInventoryReplenishmentMetrics()
+    case 'customer-reviews': return generateCustomerReviewsMetrics()
   }
 }
 

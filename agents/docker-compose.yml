@@ -46,3 +46,24 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
+
+  agent3-sentiment:
+    build:
+      context: ..
+      dockerfile: agents/agent3_sentiment/Dockerfile
+    ports:
+      - "8003:8003"
+    env_file:
+      - .env
+    environment:
+      - AGENT_MODEL=gpt-4o-mini
+      - EVENT_HUBS_DB=/data/event_hubs.duckdb
+    volumes:
+      - ../event_hubs.duckdb:/data/event_hubs.duckdb
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

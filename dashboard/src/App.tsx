@@ -1,19 +1,22 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useKV } from '@github/spark/hooks'
-import { NavigationSidebar, TabId } from './components/NavigationSidebar'
+import { NavigationSidebar, TabId, Persona, getDefaultTabForPersona } from './components/NavigationSidebar'
 import { DashboardView } from './components/DashboardView'
 import { MetricDetailView } from './components/MetricDetailView'
 import { DigestView } from './components/DigestView'
+import { ReviewTableView } from './components/ReviewTableView'
 import { generateMetricBreakdown } from './lib/mock-data'
 import { useTabMetrics } from './hooks/use-metrics'
 import { MetricData, ChatMessage, MetricBreakdown } from './lib/types'
+import { fetchDigest } from './lib/api-client'
 import { Toaster, toast } from 'sonner'
 import { useIsMobile } from './hooks/use-mobile'
 import { Sheet, SheetContent, SheetTrigger } from './components/ui/sheet'
 import { Button } from './components/ui/button'
 import { List } from '@phosphor-icons/react'
 
-type View = 'dashboard' | 'detail'
+type View = 'dashboard' | 'detail' | 'review-table'
+type ReviewFilter = 'all' | 'positive' | 'negative'
 
 function App() {
   const isMobile = useIsMobile()
@@ -21,18 +24,30 @@ function App() {
   const [currentView, setCurrentView] = useState<View>('dashboard')
   const [selectedMetric, setSelectedMetric] = useState<MetricData | null>(null)
   const [breakdown, setBreakdown] = useState<MetricBreakdown | null>(null)
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>('all')
+  const [reviewTitle, setReviewTitle] = useState<string>('Customer Reviews')
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
+  const [persona, setPersona] = useState<Persona>('Master')
+
+  const handlePersonaChange = (newPersona: Persona) => {
+    setPersona(newPersona)
+    const defaultTab = getDefaultTabForPersona(newPersona)
+    setActiveTab(defaultTab)
+    setCurrentView('dashboard')
+  }
   
   const { metrics: mainMetrics } = useTabMetrics('main', 30_000)
   const { metrics: omnichannelMetrics } = useTabMetrics('omnichannel', 30_000)
   const { metrics: customerEngagementMetrics } = useTabMetrics('customer-engagement', 30_000)
   const { metrics: inventoryReplenishmentMetrics } = useTabMetrics('inventory-replenishment', 30_000)
+  const { metrics: customerReviewsMetrics } = useTabMetrics('customer-reviews', 30_000)
   
   const [mainMessages, setMainMessages] = useKV<ChatMessage[]>('chat-messages-main', [])
   const [omnichannelMessages, setOmnichannelMessages] = useKV<ChatMessage[]>('chat-messages-omnichannel', [])
   const [customerEngagementMessages, setCustomerEngagementMessages] = useKV<ChatMessage[]>('chat-messages-customer-engagement', [])
   const [inventoryReplenishmentMessages, setInventoryReplenishmentMessages] = useKV<ChatMessage[]>('chat-messages-inventory-replenishment', [])
+  const [customerReviewsMessages, setCustomerReviewsMessages] = useKV<ChatMessage[]>('chat-messages-customer-reviews', [])
   
   const [isLoading, setIsLoading] = useState(false)
 
@@ -41,6 +56,46 @@ function App() {
   const [digestNarrative, setDigestNarrative] = useKV<string | null>('digest-narrative', null)
   const [digestLoading, setDigestLoading] = useState(false)
   const [digestLastGenerated, setDigestLastGenerated] = useState<Date | null>(null)
+  const digestPollingRef = useRef(false)
+
+  // Auto-poll for pre-generated digest from server (Agent 2 triggered on startup)
+  useEffect(() => {
+    if (digestNarrative || digestPollingRef.current) return
+    digestPollingRef.current = true
+    setDigestLoading(true)
+
+    let cancelled = false
+    const poll = async () => {
+      const maxAttempts = 60   // poll for up to ~5 min (every 5s)
+      for (let i = 0; i < maxAttempts; i++) {
+        if (cancelled) return
+        try {
+          const result = await fetchDigest()
+          if (result.status === 'ready' && result.narrative) {
+            if (!cancelled) {
+              setDigestNarrative(result.narrative)
+              setDigestLastGenerated(new Date(result.generated_at || Date.now()))
+              setDigestLoading(false)
+              toast.success('Digest ready')
+            }
+            return
+          }
+          if (result.status === 'none') {
+            // Agent 2 not available — stop polling
+            if (!cancelled) setDigestLoading(false)
+            return
+          }
+        } catch {
+          // server not ready yet, keep trying
+        }
+        await new Promise(r => setTimeout(r, 5000))
+      }
+      if (!cancelled) setDigestLoading(false)
+    }
+    poll()
+
+    return () => { cancelled = true }
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleGenerateDigest = async () => {
     setDigestLoading(true)
@@ -82,6 +137,8 @@ function App() {
         return customerEngagementMetrics
       case 'inventory-replenishment':
         return inventoryReplenishmentMetrics
+      case 'customer-reviews':
+        return customerReviewsMetrics
       default:
         return mainMetrics
     }
@@ -95,6 +152,8 @@ function App() {
         return customerEngagementMessages
       case 'inventory-replenishment':
         return inventoryReplenishmentMessages
+      case 'customer-reviews':
+        return customerReviewsMessages
       default:
         return mainMessages
     }
@@ -111,6 +170,9 @@ function App() {
       case 'inventory-replenishment':
         setInventoryReplenishmentMessages(setter)
         break
+      case 'customer-reviews':
+        setCustomerReviewsMessages(setter)
+        break
       default:
         setMainMessages(setter)
         break
@@ -125,6 +187,8 @@ function App() {
         return 'Customer Engagement'
       case 'inventory-replenishment':
         return 'Inventory Replenishment'
+      case 'customer-reviews':
+        return 'Customer Reviews'
       default:
         return 'Retail Analytics Hub'
     }
@@ -138,6 +202,8 @@ function App() {
         return 'Customer interaction and loyalty insights'
       case 'inventory-replenishment':
         return 'Stock levels and replenishment tracking'
+      case 'customer-reviews':
+        return 'Sentiment analysis and review processing metrics'
       default:
         return 'Real-time performance metrics and insights'
     }
@@ -273,6 +339,29 @@ Provide a helpful, concise response about the retail data. Keep responses under 
   }
 
   const handleMetricClick = (metric: MetricData) => {
+    // Customer reviews tiles → show review records table
+    if (activeTab === 'customer-reviews') {
+      if (metric.id === 'cr-total-reviews') {
+        setReviewFilter('all')
+        setReviewTitle('All Customer Reviews')
+      } else if (metric.id === 'cr-positive-pct') {
+        setReviewFilter('positive')
+        setReviewTitle('Positive Reviews')
+      } else if (metric.id === 'cr-negative-pct') {
+        setReviewFilter('negative')
+        setReviewTitle('Negative Reviews')
+      } else {
+        // Other review tiles (avg score, needs review, processed) → default detail view
+        setSelectedMetric(metric)
+        const metricBreakdown = generateMetricBreakdown(metric.id)
+        setBreakdown(metricBreakdown)
+        setCurrentView('detail')
+        return
+      }
+      setCurrentView('review-table')
+      return
+    }
+
     setSelectedMetric(metric)
     const metricBreakdown = generateMetricBreakdown(metric.id)
     setBreakdown(metricBreakdown)
@@ -306,7 +395,7 @@ Provide a helpful, concise response about the retail data. Keep responses under 
           </Button>
         </SheetTrigger>
         <SheetContent side="left" className="w-[280px] p-0">
-          <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} />
+          <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} persona={persona} onPersonaChange={handlePersonaChange} />
         </SheetContent>
       </Sheet>
     </div>
@@ -318,7 +407,7 @@ Provide a helpful, concise response about the retail data. Keep responses under 
       <div className="flex h-screen">
         <Toaster />
         {mobileNav}
-        {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} />}
+        {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} persona={persona} onPersonaChange={handlePersonaChange} />}
         <DigestView
           narrative={digestNarrative ?? null}
           isLoading={digestLoading}
@@ -329,12 +418,28 @@ Provide a helpful, concise response about the retail data. Keep responses under 
     )
   }
 
+  // Review table view — Customer Reviews tab drill-down
+  if (currentView === 'review-table') {
+    return (
+      <div className="flex h-screen">
+        <Toaster />
+        {mobileNav}
+        {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} persona={persona} onPersonaChange={handlePersonaChange} />}
+        <ReviewTableView
+          filter={reviewFilter}
+          title={reviewTitle}
+          onBack={handleBackToDashboard}
+        />
+      </div>
+    )
+  }
+
   if (currentView === 'detail' && selectedMetric && breakdown) {
     return (
       <div className="flex h-screen">
         <Toaster />
         {mobileNav}
-        {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} />}
+        {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} persona={persona} onPersonaChange={handlePersonaChange} />}
         <MetricDetailView
           metric={selectedMetric}
           breakdown={breakdown}
@@ -354,7 +459,7 @@ Provide a helpful, concise response about the retail data. Keep responses under 
     <div className="flex h-screen">
       <Toaster />
       {mobileNav}
-      {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} />}
+      {!isMobile && <NavigationSidebar activeTab={activeTab} onTabChange={handleTabChange} persona={persona} onPersonaChange={handlePersonaChange} />}
       <DashboardView
         title={getTabTitle()}
         subtitle={getTabSubtitle()}

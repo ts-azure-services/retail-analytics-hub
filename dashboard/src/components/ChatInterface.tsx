@@ -47,7 +47,7 @@ export function ChatInterface({ messages, onSendMessage, isLoading, onRefresh }:
   }
 
   return (
-    <Card className="flex flex-col h-full">
+    <Card className="flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <h2 className="text-lg font-semibold font-space">Analytics Assistant</h2>

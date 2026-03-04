@@ -159,3 +159,38 @@ class HealthResponse(BaseModel):
     status: str = "healthy"
     agent: str = ""
     version: str = "0.1.0"
+
+
+# ── Agent 3 Enums ────────────────────────────────────────────────
+
+class SentimentCategory(str, Enum):
+    VERY_NEGATIVE = "very_negative"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+    POSITIVE = "positive"
+    VERY_POSITIVE = "very_positive"
+
+
+class ReviewStatus(str, Enum):
+    TO_BE_PROCESSED = "To be processed"
+    PROCESSED_FOR_RESPONSE = "processed for response"
+    NEEDING_HUMAN_REVIEW = "Needing human review"
+    INCOMPLETE_PROCESSING = "incomplete processing"
+
+
+# ── Agent 3 Models ───────────────────────────────────────────────
+
+class ReviewRequest(BaseModel):
+    """Incoming review analysis request."""
+    review_id: int
+    review_text: str
+
+
+class ReviewResponse(BaseModel):
+    """Review analysis result."""
+    review_id: int
+    sentiment_category: str
+    sentiment_score: float
+    status: str
+    chatbot_statement: Optional[str] = None
+    needs_human_review: bool = False

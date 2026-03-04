@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_POSTGRES_DB = str(REPO_ROOT / "local_postgres.duckdb")
 LOCAL_COSMOS_DB = str(REPO_ROOT / "local_cosmos.duckdb")
+EVENT_HUBS_DB = str(REPO_ROOT / "event_hubs.duckdb")
 
 
 # Colors for output
@@ -506,6 +507,7 @@ Examples:
         for db_path, label in [
             (LOCAL_POSTGRES_DB, "Local PostgreSQL (DuckDB)"),
             (LOCAL_COSMOS_DB, "Local CosmosDB (DuckDB)"),
+            (EVENT_HUBS_DB, "Event Hubs (DuckDB)"),
         ]:
             dv = DuckDBValidator(db_path, label)
             if not dv.validate_all():

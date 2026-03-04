@@ -140,10 +140,25 @@ def _get_metric_drivers(metric_id: str) -> dict:
 
 
 def _get_sku_analysis() -> dict:
-    """Analyze inventory health at the SKU level."""
+    """Analyze inventory health at the SKU level — summarised to avoid token overflow."""
     conn = get_postgres_connection()
     try:
-        sql = """
+        # High-level summary: counts and averages by reorder status
+        summary_sql = """
+            SELECT
+                CASE WHEN quantity_on_hand <= reorder_point THEN 'below_reorder' ELSE 'above_reorder' END AS status,
+                COUNT(*) AS sku_count,
+                ROUND(AVG(quantity_on_hand), 1) AS avg_qty_on_hand,
+                ROUND(AVG(quantity_reserved), 1) AS avg_qty_reserved,
+                ROUND(AVG(on_order_qty), 1) AS avg_on_order,
+                SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END) AS zero_stock_count
+            FROM inventory
+            GROUP BY status
+        """
+        summary_rows = execute_query(conn, summary_sql)
+
+        # Top 20 most critical SKUs (lowest stock relative to reorder point)
+        critical_sql = """
             SELECT
                 i.sku,
                 i.location_id,
@@ -153,10 +168,11 @@ def _get_sku_analysis() -> dict:
                 i.reorder_point,
                 CASE WHEN i.quantity_on_hand <= i.reorder_point THEN TRUE ELSE FALSE END AS below_reorder
             FROM inventory i
-            ORDER BY i.quantity_on_hand ASC
+            ORDER BY (i.quantity_on_hand - i.reorder_point) ASC
+            LIMIT 20
         """
-        rows = execute_query(conn, sql)
-        return {"sku_analysis": rows}
+        critical_rows = execute_query(conn, critical_sql)
+        return {"summary": summary_rows, "critical_skus": critical_rows}
     finally:
         conn.close()
 

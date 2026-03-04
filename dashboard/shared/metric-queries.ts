@@ -1,6 +1,6 @@
 // Shared between server and client — no React dependencies.
 
-export type TabId = 'main' | 'omnichannel' | 'customer-engagement' | 'inventory-replenishment'
+export type TabId = 'main' | 'omnichannel' | 'customer-engagement' | 'inventory-replenishment' | 'customer-reviews'
 
 export interface MetricQuery {
   id: string
@@ -164,6 +164,37 @@ const inventoryQueries: MetricQuery[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// Customer Reviews tab — 6 metrics
+// ---------------------------------------------------------------------------
+
+const customerReviewsQueries: MetricQuery[] = [
+  {
+    id: 'cr-total-reviews',
+    sql: 'SELECT COUNT(*) AS value FROM customer_reviews',
+  },
+  {
+    id: 'cr-positive-pct',
+    sql: `SELECT COUNT(*) FILTER (WHERE sentiment_category IN ('positive','very_positive')) * 100.0 / NULLIF(COUNT(*), 0) AS value FROM customer_reviews`,
+  },
+  {
+    id: 'cr-negative-pct',
+    sql: `SELECT COUNT(*) FILTER (WHERE sentiment_category IN ('negative','very_negative')) * 100.0 / NULLIF(COUNT(*), 0) AS value FROM customer_reviews`,
+  },
+  {
+    id: 'cr-avg-score',
+    sql: 'SELECT AVG(sentiment_score) AS value FROM customer_reviews WHERE sentiment_score IS NOT NULL',
+  },
+  {
+    id: 'cr-needs-review',
+    sql: `SELECT COUNT(*) AS value FROM customer_reviews WHERE status = 'Needing human review'`,
+  },
+  {
+    id: 'cr-processed-pct',
+    sql: `SELECT COUNT(*) FILTER (WHERE status = 'processed for response') * 100.0 / NULLIF(COUNT(*), 0) AS value FROM customer_reviews`,
+  },
+]
+
+// ---------------------------------------------------------------------------
 // Lookup
 // ---------------------------------------------------------------------------
 
@@ -172,10 +203,11 @@ const tabQueries: Record<TabId, MetricQuery[]> = {
   omnichannel: omnichannelQueries,
   'customer-engagement': customerEngagementQueries,
   'inventory-replenishment': inventoryQueries,
+  'customer-reviews': customerReviewsQueries,
 }
 
 export function getQueriesForTab(tabId: string): MetricQuery[] {
   return tabQueries[tabId as TabId] ?? []
 }
 
-export const validTabIds: TabId[] = ['main', 'omnichannel', 'customer-engagement', 'inventory-replenishment']
+export const validTabIds: TabId[] = ['main', 'omnichannel', 'customer-engagement', 'inventory-replenishment', 'customer-reviews']

@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from agents.shared.models import ChatRequest, ChatResponse, HealthResponse
-from .orchestrator import run_explainer_pipeline
+from .workflow_manager import run_explainer_pipeline
 
 app = FastAPI(
     title="Agent 1 — Dashboard Explainer",

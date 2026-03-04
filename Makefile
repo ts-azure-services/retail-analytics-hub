@@ -12,6 +12,7 @@ clean-local: ## [util] Delete local DuckDB database files
 	@echo "🗑  Removing local DuckDB files..."
 	@rm -f local_postgres.duckdb local_postgres.duckdb.wal
 	@rm -f local_cosmos.duckdb local_cosmos.duckdb.wal
+	@rm -f event_hubs.duckdb event_hubs.duckdb.wal
 	@echo "✓ Local databases removed"
 
 seed-cosmos: ## [util] Seed CosmosDB with 100 customer records (profile, contact, address, account info, tags)
@@ -327,6 +328,10 @@ clean-simulation: ## [util] Reset databases (cleanse + re-seed)
 	@make cleanse-data-force
 	@make seed-all-with-history
 
+seed-reviews: ## [core] Seed customer reviews into event_hubs.duckdb
+	@echo "📝 Seeding customer reviews..."
+	uv run python -m simulation.customer_review_simulator
+
 
 ##@ Dashboard
 dashboard-install: ## [util] Install dashboard npm dependencies
@@ -380,6 +385,12 @@ agents-down: ## [core] Stop agent services
 
 agents-logs: ## [util] Tail agent service logs
 	docker compose -f agents/docker-compose.yml logs -f
+
+agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
+	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
+
+agent3-dev: ## [util] Start Agent 3 with auto-reload
+	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
 
 
 ##@ Help

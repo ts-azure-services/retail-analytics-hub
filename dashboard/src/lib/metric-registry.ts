@@ -1894,6 +1894,278 @@ const inventoryReplenishmentMetrics: RegistryMetric[] = [
 ]
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Customer Reviews tab — 6 tiles
+// ---------------------------------------------------------------------------
+
+const customerReviewsMetrics: RegistryMetric[] = [
+  {
+    id: 'cr-total-reviews',
+    label: 'Total Reviews',
+    format: 'number',
+    unit: '',
+    icon: 'trend',
+    sourceTable: 'customer_reviews',
+    sql: 'SELECT COUNT(*) FROM customer_reviews',
+    invertTrend: false,
+    seedValue: 1250,
+    seedPreviousValue: 1180,
+    drivers: [
+      {
+        id: 'cr-tr-by-channel',
+        label: 'Reviews by Channel',
+        formula: 'COUNT(*) GROUP BY channel',
+        sourceTable: 'customer_reviews',
+        description: 'Distribution of reviews across sales channels',
+        format: 'number',
+        seedValue: 1250,
+        seedContribution: 45.0,
+        seedTrend: 'up',
+        seedChangePercent: 5.9,
+      },
+      {
+        id: 'cr-tr-daily-rate',
+        label: 'Daily Review Rate',
+        formula: 'COUNT(*) / date_range',
+        sourceTable: 'customer_reviews',
+        description: 'Average number of reviews received per day',
+        format: 'number',
+        seedValue: 42,
+        seedContribution: 30.0,
+        seedTrend: 'up',
+        seedChangePercent: 3.2,
+      },
+      {
+        id: 'cr-tr-with-text',
+        label: 'Reviews with Text',
+        formula: "COUNT(*) WHERE review_text IS NOT NULL",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews that include written feedback',
+        format: 'number',
+        seedValue: 980,
+        seedContribution: 25.0,
+        seedTrend: 'up',
+        seedChangePercent: 4.1,
+      },
+    ],
+    insights: [
+      'Review volume growing at 5.9%, indicating healthy customer engagement',
+      'Most reviews include text feedback, providing rich qualitative data',
+      'Daily review rate stable, suggesting consistent post-purchase follow-up',
+    ],
+  },
+  {
+    id: 'cr-positive-pct',
+    label: 'Positive Rate',
+    format: 'percentage',
+    unit: '%',
+    icon: 'users',
+    sourceTable: 'customer_reviews',
+    sql: "SELECT COUNT(*) FILTER (WHERE sentiment_category IN ('positive','very_positive')) * 100.0 / COUNT(*) FROM customer_reviews",
+    invertTrend: false,
+    seedValue: 68.4,
+    seedPreviousValue: 65.2,
+    drivers: [
+      {
+        id: 'cr-pos-very',
+        label: 'Very Positive',
+        formula: "COUNT(*) WHERE sentiment_category = 'very_positive'",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews classified as very positive sentiment',
+        format: 'percentage',
+        seedValue: 28.5,
+        seedContribution: 41.7,
+        seedTrend: 'up',
+        seedChangePercent: 3.8,
+      },
+      {
+        id: 'cr-pos-positive',
+        label: 'Positive',
+        formula: "COUNT(*) WHERE sentiment_category = 'positive'",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews classified as positive sentiment',
+        format: 'percentage',
+        seedValue: 39.9,
+        seedContribution: 58.3,
+        seedTrend: 'up',
+        seedChangePercent: 2.1,
+      },
+    ],
+    insights: [
+      'Positive sentiment rate improved by 3.2pp, reflecting product/service improvements',
+      'Very positive reviews growing faster than neutral positive ones',
+    ],
+  },
+  {
+    id: 'cr-negative-pct',
+    label: 'Negative Rate',
+    format: 'percentage',
+    unit: '%',
+    icon: 'warning',
+    sourceTable: 'customer_reviews',
+    sql: "SELECT COUNT(*) FILTER (WHERE sentiment_category IN ('negative','very_negative')) * 100.0 / COUNT(*) FROM customer_reviews",
+    invertTrend: true,
+    seedValue: 12.8,
+    seedPreviousValue: 14.5,
+    drivers: [
+      {
+        id: 'cr-neg-very',
+        label: 'Very Negative',
+        formula: "COUNT(*) WHERE sentiment_category = 'very_negative'",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews classified as very negative sentiment',
+        format: 'percentage',
+        seedValue: 3.2,
+        seedContribution: 25.0,
+        seedTrend: 'down',
+        seedChangePercent: 2.1,
+      },
+      {
+        id: 'cr-neg-negative',
+        label: 'Negative',
+        formula: "COUNT(*) WHERE sentiment_category = 'negative'",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews classified as negative sentiment',
+        format: 'percentage',
+        seedValue: 9.6,
+        seedContribution: 75.0,
+        seedTrend: 'down',
+        seedChangePercent: 1.5,
+      },
+    ],
+    insights: [
+      'Negative rate decreased by 1.7pp — fewer complaints about delivery and product quality',
+      'Very negative reviews declining fastest, indicating major pain points are being addressed',
+    ],
+  },
+  {
+    id: 'cr-avg-score',
+    label: 'Avg Sentiment Score',
+    format: 'number',
+    unit: '',
+    icon: 'trend',
+    sourceTable: 'customer_reviews',
+    sql: 'SELECT AVG(sentiment_score) FROM customer_reviews WHERE sentiment_score IS NOT NULL',
+    invertTrend: false,
+    seedValue: 0.42,
+    seedPreviousValue: 0.38,
+    drivers: [
+      {
+        id: 'cr-score-dist',
+        label: 'Score Distribution',
+        formula: 'HISTOGRAM(sentiment_score)',
+        sourceTable: 'customer_reviews',
+        description: 'Distribution of sentiment scores across reviews',
+        format: 'number',
+        seedValue: 0.42,
+        seedContribution: 60.0,
+        seedTrend: 'up',
+        seedChangePercent: 10.5,
+      },
+      {
+        id: 'cr-score-std',
+        label: 'Score Std Dev',
+        formula: 'STDDEV(sentiment_score)',
+        sourceTable: 'customer_reviews',
+        description: 'Variance in sentiment — lower means more consistent experience',
+        format: 'number',
+        seedValue: 0.31,
+        seedContribution: 40.0,
+        seedTrend: 'down',
+        seedChangePercent: 5.2,
+      },
+    ],
+    insights: [
+      'Average sentiment score trending upward, indicating overall improvement in customer satisfaction',
+      'Lower standard deviation suggests a more consistent customer experience',
+    ],
+  },
+  {
+    id: 'cr-needs-review',
+    label: 'Needing Human Review',
+    format: 'number',
+    unit: '',
+    icon: 'warning',
+    sourceTable: 'customer_reviews',
+    sql: "SELECT COUNT(*) FROM customer_reviews WHERE status = 'Needing human review'",
+    invertTrend: true,
+    seedValue: 47,
+    seedPreviousValue: 62,
+    drivers: [
+      {
+        id: 'cr-nr-ambiguous',
+        label: 'Ambiguous Sentiment',
+        formula: "COUNT(*) WHERE status = 'Needing human review' AND sentiment_category = 'neutral'",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews where automated sentiment analysis was inconclusive',
+        format: 'number',
+        seedValue: 28,
+        seedContribution: 59.6,
+        seedTrend: 'down',
+        seedChangePercent: 8.0,
+      },
+      {
+        id: 'cr-nr-flagged',
+        label: 'Flagged Content',
+        formula: "COUNT(*) WHERE status = 'Needing human review' AND flagged = TRUE",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews flagged for policy or content concerns',
+        format: 'number',
+        seedValue: 19,
+        seedContribution: 40.4,
+        seedTrend: 'down',
+        seedChangePercent: 5.3,
+      },
+    ],
+    insights: [
+      'Human review queue shrinking by 24%, thanks to improved classification model',
+      'Ambiguous sentiment cases declining as model confidence thresholds improve',
+    ],
+  },
+  {
+    id: 'cr-processed-pct',
+    label: 'Processing Rate',
+    format: 'percentage',
+    unit: '%',
+    icon: 'users',
+    sourceTable: 'customer_reviews',
+    sql: "SELECT COUNT(*) FILTER (WHERE status = 'processed for response') * 100.0 / COUNT(*) FROM customer_reviews",
+    invertTrend: false,
+    seedValue: 82.3,
+    seedPreviousValue: 76.8,
+    drivers: [
+      {
+        id: 'cr-pr-auto',
+        label: 'Auto-Processed',
+        formula: "COUNT(*) WHERE status = 'processed for response' AND auto_processed = TRUE",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews processed automatically by the sentiment pipeline',
+        format: 'percentage',
+        seedValue: 65.1,
+        seedContribution: 79.1,
+        seedTrend: 'up',
+        seedChangePercent: 6.2,
+      },
+      {
+        id: 'cr-pr-manual',
+        label: 'Manually Processed',
+        formula: "COUNT(*) WHERE status = 'processed for response' AND auto_processed = FALSE",
+        sourceTable: 'customer_reviews',
+        description: 'Reviews processed after human review',
+        format: 'percentage',
+        seedValue: 17.2,
+        seedContribution: 20.9,
+        seedTrend: 'up',
+        seedChangePercent: 3.5,
+      },
+    ],
+    insights: [
+      'Processing rate up 5.5pp, driven primarily by automation improvements',
+      'Auto-processing handles 79% of all processed reviews, reducing manual workload',
+    ],
+  },
+]
+
 // Registry map & lookups
 // ---------------------------------------------------------------------------
 
@@ -1902,6 +2174,7 @@ const allMetrics: RegistryMetric[] = [
   ...omnichannelMetrics,
   ...customerEngagementMetrics,
   ...inventoryReplenishmentMetrics,
+  ...customerReviewsMetrics,
 ]
 
 const registryMap = new Map<string, RegistryMetric>(
@@ -1913,6 +2186,7 @@ const tabMetrics: Partial<Record<TabId, RegistryMetric[]>> = {
   omnichannel: omnichannelMetrics,
   'customer-engagement': customerEngagementMetrics,
   'inventory-replenishment': inventoryReplenishmentMetrics,
+  'customer-reviews': customerReviewsMetrics,
 }
 
 // ---------------------------------------------------------------------------
@@ -1984,6 +2258,10 @@ export function generateCustomerEngagementMetrics(): MetricData[] {
 
 export function generateInventoryReplenishmentMetrics(): MetricData[] {
   return inventoryReplenishmentMetrics.map(registryToMetricData)
+}
+
+export function generateCustomerReviewsMetrics(): MetricData[] {
+  return customerReviewsMetrics.map(registryToMetricData)
 }
 
 export function generateMetricBreakdown(metricId: string): MetricBreakdown {

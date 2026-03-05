@@ -5,11 +5,30 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from functools import lru_cache
+from typing import Callable
 
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# ── Azure AD token provider (cached at module level) ─────────────
+_credential: DefaultAzureCredential | None = None
+_token_provider: Callable[[], str] | None = None
+
+
+def get_azure_token_provider() -> Callable[[], str]:
+    """Return a cached callable that yields Azure AD bearer tokens
+    scoped to Azure OpenAI (cognitiveservices)."""
+    global _credential, _token_provider
+    if _token_provider is None:
+        _credential = DefaultAzureCredential()
+        _token_provider = get_bearer_token_provider(
+            _credential,
+            "https://cognitiveservices.azure.com/.default",
+        )
+    return _token_provider
 
 
 class Settings(BaseSettings):
@@ -19,7 +38,6 @@ class Settings(BaseSettings):
 
     # ── Azure OpenAI ──────────────────────────────────────────────
     azure_openai_endpoint: str = ""
-    azure_openai_api_key: str = ""
     azure_openai_api_version: str = "2024-12-01-preview"
 
     # ── Model defaults (overridden per-agent via env) ─────────────

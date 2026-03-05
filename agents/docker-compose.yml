@@ -15,6 +15,7 @@ services:
     volumes:
       - ../local_postgres.duckdb:/data/local_postgres.duckdb:ro
       - ../local_cosmos.duckdb:/data/local_cosmos.duckdb:ro
+      - ~/.azure:/root/.azure
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 30s
@@ -39,6 +40,7 @@ services:
     volumes:
       - ../local_postgres.duckdb:/data/local_postgres.duckdb:ro
       - ../local_cosmos.duckdb:/data/local_cosmos.duckdb:ro
+      - ~/.azure:/root/.azure
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
@@ -60,6 +62,7 @@ services:
       - EVENT_HUBS_DB=/data/event_hubs.duckdb
     volumes:
       - ../event_hubs.duckdb:/data/event_hubs.duckdb
+      - ~/.azure:/root/.azure
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s

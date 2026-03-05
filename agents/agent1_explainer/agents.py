@@ -5,7 +5,7 @@ from __future__ import annotations
 from agent_framework import ChatAgent, AgentExecutor
 from agent_framework.azure import AzureOpenAIChatClient
 
-from agents.shared.config import get_settings
+from agents.shared.config import get_settings, get_azure_token_provider
 from agents.agent1_explainer.prompts import (
     INTENT_SYSTEM_PROMPT,
     ANALYZER_SYSTEM_PROMPT,
@@ -18,7 +18,7 @@ def create_intent_classifier() -> AgentExecutor:
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
+        ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
         deployment_name="gpt-4o-mini",
     )
@@ -35,7 +35,7 @@ def create_data_analyzer() -> AgentExecutor:
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
+        ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
         deployment_name="gpt-4o-mini",
     )
@@ -52,7 +52,7 @@ def create_response_formatter() -> AgentExecutor:
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
+        ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
         deployment_name="gpt-4o-mini",
     )

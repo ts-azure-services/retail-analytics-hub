@@ -374,10 +374,15 @@ dashboard-audit-fix: ## [util] Fix npm audit vulnerabilities
 
 
 ##@ Agents
-agents-build: ## [core] Build agent Docker images
-	docker compose -f agents/docker-compose.yml build
+agents-login: ## [prereq] Refresh Azure CLI login (required for Azure AD auth in containers)
+	@echo "Refreshing Azure CLI login..."
+	az login
+	@echo "Azure CLI tokens updated in ~/.azure"
 
-agents-up: ## [core] Start agent services (detached)
+agents-build: ## [core] Build agent Docker images
+	docker compose -f agents/docker-compose.yml build --no-cache
+
+agents-up: agents-login ## [core] Start agent services (detached)
 	docker compose -f agents/docker-compose.yml up -d
 
 agents-down: ## [core] Stop agent services

@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+# Install Azure CLI (for AzureCliCredential in local dev)
+RUN apt-get update && apt-get install -y curl && \
+    curl -sL https://aka.ms/InstallAzureCLIDeb | bash && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from agent_framework import ChatAgent, AgentExecutor
 from agent_framework.azure import AzureOpenAIChatClient
 
-from agents.shared.config import get_settings
+from agents.shared.config import get_settings, get_azure_token_provider
 from agents.agent3_sentiment.prompts import (
     CLASSIFIER_SYSTEM_PROMPT,
     RESPONDER_SYSTEM_PROMPT,
@@ -17,7 +17,7 @@ def create_classifier_executor() -> AgentExecutor:
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
+        ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
         deployment_name=settings.agent_model,
     )
@@ -34,7 +34,7 @@ def create_responder_executor() -> AgentExecutor:
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
-        api_key=settings.azure_openai_api_key,
+        ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
         deployment_name=settings.agent_model,
     )

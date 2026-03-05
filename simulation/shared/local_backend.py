@@ -70,20 +70,48 @@ class DuckDBPostgresWriter:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    # Map each sequence to the table + column it serves so we can
+    # detect existing rows and avoid primary-key collisions.
+    _SEQ_TABLE_COL = {
+        "orders_order_id_seq": ("orders", "order_id"),
+        "order_items_order_item_id_seq": ("order_items", "order_item_id"),
+        "payments_payment_id_seq": ("payments", "payment_id"),
+        "points_transactions_transaction_id_seq": ("points_transactions", "transaction_id"),
+        "returns_return_id_seq": ("returns", "return_id"),
+        "purchase_order_lines_po_line_id_seq": ("purchase_order_lines", "po_line_id"),
+    }
+
     def _ensure_sequences(self):
-        """Create sequences used for SERIAL emulation if missing."""
-        for seq in [
-            "orders_order_id_seq",
-            "order_items_order_item_id_seq",
-            "payments_payment_id_seq",
-            "points_transactions_transaction_id_seq",
-            "returns_return_id_seq",
-            "purchase_order_lines_po_line_id_seq",
-        ]:
+        """Create sequences used for SERIAL emulation if missing.
+
+        If the sequence does not yet exist we peek at the corresponding
+        table (when it exists) and start the sequence *above* the current
+        maximum value so that nextval() never returns a duplicate key.
+        The fallback START (10000) matches the value used in seed_local.py.
+        """
+        default_start = 10000
+        for seq, (table, col) in self._SEQ_TABLE_COL.items():
             try:
-                self._conn.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq} START 1")
+                self._conn.execute(f"CREATE SEQUENCE IF NOT EXISTS {seq} START {default_start}")
             except Exception:
-                pass  # sequence may already exist
+                pass  # sequence already exists
+
+        # Safety net: if the table already has rows whose max id ≥ the
+        # current sequence value we bump the sequence past the max.
+        for seq, (table, col) in self._SEQ_TABLE_COL.items():
+            try:
+                row = self._conn.execute(
+                    f"SELECT MAX({col}) FROM {table}"
+                ).fetchone()
+                max_id = row[0] if row and row[0] is not None else 0
+                if max_id > 0:
+                    # currval is unreliable before first nextval in DuckDB;
+                    # safest approach: drop + recreate starting above max.
+                    next_start = max_id + 1
+                    self._conn.execute(f"DROP SEQUENCE IF EXISTS {seq}")
+                    self._conn.execute(f"CREATE SEQUENCE {seq} START {next_start}")
+            except Exception:
+                pass  # table may not exist yet
 
     def _ensure_ml_tables(self):
         """Create tables for parameter sweeps and ML training data."""

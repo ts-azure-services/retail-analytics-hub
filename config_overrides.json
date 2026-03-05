@@ -1,0 +1,27 @@
+{
+  "distributions": {
+    "arrival_rate_online": 50.0,
+    "arrival_rate_in_store": 25.0,
+    "basket_size_mean": 5.0,
+    "abandonment_rate_online": 0.25,
+    "abandonment_rate_in_store": 0.05,
+    "payment_failure_rate": 0.05,
+    "fulfillment_delay_max": 3.0,
+    "service_time_packing_mode": 10.0,
+    "bopis_prep_time_mode": 30.0
+  },
+  "inventory": {
+    "daily_shrinkage_rate": 0.001
+  },
+  "engagement": {
+    "retention_response_rate": 0.25,
+    "churned_threshold_days": 365,
+    "lapsed_threshold_days": 30,
+    "points_per_dollar": 2.0,
+    "redemption_threshold": 50,
+    "points_to_dollar_ratio": 0.1,
+    "base_email_response_rate": 0.08,
+    "vip_response_boost": 0.15,
+    "click_to_conversion_rate": 0.15
+  }
+}

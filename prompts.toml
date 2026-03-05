@@ -200,3 +200,53 @@ Constraints:
 - Use SQL code blocks only for computation examples in the High-Level section; workflow-specific sections should use formula shorthand in tables
 - Cross-reference source tables from docs/data.md
 """
+
+[dashboard-docs]
+prompt = """
+Generate docs/dashboard.md documenting the dashboard application. Structure:
+
+1. **Overview** — One paragraph: the dashboard is a React SPA backed by an Express API server, displaying 36 live metrics across 5 operational tabs plus an AI-generated executive digest, with an integrated chat panel powered by Agent 1.
+
+2. **Live Data & Refresh Cadence** — Explain the polling mechanism in detail:
+   - Uses `@tanstack/react-query` with `refetchInterval` of 30 seconds (30,000 ms)
+   - `staleTime` of 15 seconds — cached data considered fresh for half the polling interval
+   - Transport: HTTP GET `/api/metrics/:tab` via `fetch()`
+   - Database: DuckDB opened in read-only mode, queries run concurrently via `Promise.allSettled`
+   - 1 retry on failure
+   - Include a table summarizing: polling interval, stale time, transport, database mode, retries
+   - Explain the digest startup poll: `GET /api/digest` every 5 seconds up to ~5 minutes for Agent 2
+   - Note: no WebSockets or SSE — straightforward HTTP polling
+   - Clarify that the "live" indicator on tiles reflects genuine live polling of real data, not static values
+
+3. **Tabs & Personas** — Three sub-sections:
+   - **Tabs** — Table with columns: Tab, ID, Description. List all 6 tabs (Digest, Main, Omnichannel, Customer Engagement, Inventory Replenishment, Customer Reviews) with their IDs and icons.
+   - **Personas** — Table showing which tabs each persona sees (Master, C-Suite, Inventory Specialist, Customer Specialist, Omni Specialist).
+   - **View Modes** — Numbered list of 3 view modes: Dashboard (tile grid + chat), Detail (drill-down with drivers/insights/forecast), Review Table (customer reviews tab only).
+
+4. **Metrics** — Note that 36 metrics are defined in `metric-registry.ts`. For each of the 5 metric tabs, include a markdown table with columns: Metric, ID, Format. List all metrics:
+   - Main (6): revenue, customers, conversion, aov, clv, return-rate
+   - Omnichannel (8): omni-arrival-rate, omni-conversion, omni-cart-abandon, omni-avg-journey, omni-total-orders, omni-ontime, omni-fulfillment-dur, omni-payment-success
+   - Customer Engagement (8): ce-active-rate, ce-churn-rate, ce-open-rate, ce-campaign-ctr, ce-enrollment-rate, ce-redemption-rate, ce-resolution-rate, ce-satisfaction
+   - Inventory Replenishment (8): ir-qty-on-hand, ir-below-reorder, ir-stockout-count, ir-fill-rate, ir-supplier-ontime, ir-avg-lead-time, ir-turnover, ir-shrinkage-rate
+   - Customer Reviews (6): cr-total-reviews, cr-positive-pct, cr-negative-pct, cr-avg-score, cr-needs-review, cr-processed-pct
+
+5. **Agent Integration** — Table with columns: Agent, Port, Purpose, Trigger. Cover all three agents:
+   - Agent 1 (Explainer, 8001): chat panel Q&A, triggered by user message, falls back to Spark LLM if unavailable
+   - Agent 2 (Narrative, 8002): executive digest, triggered at server startup + manual regenerate
+   - Agent 3 (Sentiment, 8003): review sentiment processing, triggered at server startup via POST /retry
+
+6. **Tech Stack** — Table with columns: Layer, Technology, Version. Cover: React 19, Vite 7, TypeScript 5.7, shadcn/ui (Radix UI), Tailwind CSS 4, D3.js + Recharts, Framer Motion 12, @tanstack/react-query 5, Phosphor Icons, Express 5, DuckDB (duckdb-async).
+
+7. **Server & API** — Note the Express server runs on port 3001 (configurable via `DASHBOARD_API_PORT`). Table with columns: Method, Endpoint, Description. List: GET /api/health, GET /api/metrics/:tab, GET /api/reviews (with filter param), GET /api/digest.
+
+8. **Port Map** — Table with columns: Service, Port, Configurable. Cover: Vite dev server (5173), Express API (3001), Agent 1 (8001), Agent 2 (8002), Agent 3 (8003).
+
+9. **Key Components** — Table with columns: Component, Purpose. Cover: NavigationSidebar, DashboardView, MetricTile, MetricDetailView, ChatInterface, DigestView, ReviewTableView. Note that MetricTile includes animated number counters (400ms ease-out), D3 sparklines with trend-colored borders, and a pulse glow on the live indicator.
+
+Constraints:
+- No Makefile commands or usage instructions
+- No code snippets (prefer tables and prose)
+- No output samples or screenshots
+- Verify tab names and metric IDs against App.tsx and metric-registry.ts
+- Cross-reference agents from the docker-compose.yml port assignments
+"""

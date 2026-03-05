@@ -460,6 +460,10 @@ class SimulationOrchestrator:
         logger.info("Loading real customers and products for engagement workflow...")
         engage_workflow.load_real_data()
         
+        # Load real customer IDs for omnichannel workflow
+        logger.info("Loading real customer IDs from CosmosDB for omnichannel workflow...")
+        omni_workflow.load_real_customers()
+        
         # Load product catalog
         products = self.load_product_catalog()
         if products:
@@ -550,7 +554,14 @@ class SimulationOrchestrator:
             print(f"\n{'='*80}")
             print(f"WORKFLOW: {workflow_name}")
             print(f"{'='*80}")
-            metrics.print_summary()
+            # Non-omnichannel workflows use custom metrics; standard summary shows zeros
+            workflow = self.workflows.get(workflow_name)
+            if workflow and hasattr(workflow, 'print_engagement_summary'):
+                workflow.print_engagement_summary()
+            elif workflow and hasattr(workflow, 'print_inventory_summary'):
+                workflow.print_inventory_summary()
+            else:
+                metrics.print_summary()
     
     def export_results(self, output_file: str):
         """Export results to JSON file"""

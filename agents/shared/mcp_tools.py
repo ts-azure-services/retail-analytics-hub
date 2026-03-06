@@ -14,6 +14,7 @@ from agents.mcp_server.tools import (
     omnichannel_tab,
     engagement_tab,
     inventory_tab,
+    reviews_tab,
     timeseries,
     aggregated,
 )
@@ -32,7 +33,7 @@ def get_tool_registry() -> dict[str, Callable]:
         return _REGISTRY
 
     _REGISTRY = {}
-    for module in (main_tab, omnichannel_tab, engagement_tab, inventory_tab, timeseries, aggregated):
+    for module in (main_tab, omnichannel_tab, engagement_tab, inventory_tab, reviews_tab, timeseries, aggregated):
         for tool_def, handler in module.get_tools():
             _REGISTRY[tool_def.name] = handler
 
@@ -76,5 +77,10 @@ TAB_TOOL_MAP: dict[str, dict] = {
         "summary": "get_inventory_metrics_summary",
         "drivers": "get_inventory_metric_drivers",
         "extra": ["get_sku_analysis"],
+    },
+    "customer-reviews": {
+        "summary": "get_reviews_metrics_summary",
+        "drivers": "get_reviews_metric_drivers",
+        "extra": ["get_review_analysis"],
     },
 }

@@ -23,7 +23,7 @@ export async function fetchTabMetrics(tabId: string): Promise<MetricResultDTO[]>
   return res.json()
 }
 
-export async function fetchReviewRecords(filter: 'all' | 'positive' | 'negative' = 'all'): Promise<ReviewRecord[]> {
+export async function fetchReviewRecords(filter: 'all' | 'positive' | 'negative' | 'needs_review' = 'all'): Promise<ReviewRecord[]> {
   const res = await fetch(`${API_BASE}/api/reviews?filter=${encodeURIComponent(filter)}`)
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`)
   return res.json()

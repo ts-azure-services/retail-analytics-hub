@@ -26,6 +26,11 @@ def get_cosmos_connection() -> duckdb.DuckDBPyConnection:
     return _connect(get_settings().local_cosmos_db)
 
 
+def get_reviews_connection() -> duckdb.DuckDBPyConnection:
+    """Return a read-only connection to the customer reviews DuckDB (event_hubs)."""
+    return _connect(get_settings().customer_reviews_db)
+
+
 def execute_query(
     conn: duckdb.DuckDBPyConnection,
     sql: str,

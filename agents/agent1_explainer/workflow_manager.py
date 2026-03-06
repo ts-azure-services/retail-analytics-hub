@@ -21,20 +21,17 @@ from agents.agent1_explainer.executors import (
 
 logger = logging.getLogger(__name__)
 
-_workflow = None
+def _build_workflow():
+    """Build a new explainer workflow instance.
 
-
-def get_workflow():
-    """Lazily build and cache the explainer workflow."""
-    global _workflow
-    if _workflow is not None:
-        return _workflow
-
+    A fresh instance is created per request because the agent_framework
+    Workflow does not allow concurrent executions on the same instance.
+    """
     intent_classifier = create_intent_classifier()
     data_analyzer = create_data_analyzer()
     response_formatter = create_response_formatter()
 
-    _workflow = (
+    return (
         WorkflowBuilder()
         .set_start_executor(prepare_input)
         .add_edge(prepare_input, intent_classifier)
@@ -44,12 +41,11 @@ def get_workflow():
         .add_edge(response_formatter, extract_output)
         .build()
     )
-    return _workflow
 
 
 async def run_explainer_pipeline(request: ChatRequest) -> str:
     """Run the explainer pipeline and return the formatted response."""
-    workflow = get_workflow()
+    workflow = _build_workflow()
     input_payload = {
         "message": request.message,
         "active_tab": request.active_tab,

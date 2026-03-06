@@ -92,6 +92,8 @@ export async function executeReviewsQuery(filter: string): Promise<ReviewRecord[
       sql += ` WHERE sentiment_category IN ('positive', 'very_positive')`
     } else if (filter === 'negative') {
       sql += ` WHERE sentiment_category IN ('negative', 'very_negative')`
+    } else if (filter === 'needs_review') {
+      sql += ` WHERE status = 'Needing human review'`
     }
 
     sql += ` ORDER BY id DESC LIMIT 200`

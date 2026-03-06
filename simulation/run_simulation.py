@@ -90,6 +90,18 @@ def run_sweep_mode(args) -> int:
     print(f"Random Seed: {args.seed}")
     print("=" * 80)
 
+    runner = None
+
+    def _sweep_shutdown_handler(signum, frame):
+        """Handle SIGTERM for graceful sweep shutdown."""
+        logger.info(f"Received signal {signum}, shutting down sweep...")
+        if runner is not None:
+            runner.close()
+        raise SystemExit(1)
+
+    import signal
+    signal.signal(signal.SIGTERM, _sweep_shutdown_handler)
+
     try:
         runner = SweepRunner(
             sweep_name=args.sweep,
@@ -110,9 +122,13 @@ def run_sweep_mode(args) -> int:
 
     except KeyboardInterrupt:
         logger.info("Sweep interrupted by user")
+        if runner is not None:
+            runner.close()
         return 1
     except Exception as e:
         logger.error(f"Sweep failed: {e}", exc_info=True)
+        if runner is not None:
+            runner.close()
         return 1
 
 

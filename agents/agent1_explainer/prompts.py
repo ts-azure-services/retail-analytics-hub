@@ -9,8 +9,9 @@ Given a user question, classify:
    - "omnichannel" (arrival rate, conversion, cart abandon, journey time, orders, on-time, fulfillment, payments)
    - "customer-engagement" (active rate, churn, open rate, CTR, enrollment, redemption, resolution, satisfaction)
    - "inventory-replenishment" (qty on hand, below reorder, stockouts, fill rate, supplier on-time, lead time, turnover, shrinkage)
+   - "customer-reviews" (sentiment score, review volume, positive rate, negative rate, chatbot response rate, review text analysis)
 
-2. **metric_ids** — which specific metrics are relevant (use IDs like "revenue", "omni-conversion", "ce-churn-rate", "ir-fill-rate")
+2. **metric_ids** — which specific metrics are relevant (use IDs like "revenue", "omni-conversion", "ce-churn-rate", "ir-fill-rate", "cr-avg-sentiment", "cr-review-volume", "cr-positive-rate", "cr-negative-rate", "cr-response-rate")
 
 3. **question_type** — one of: driver_analysis, comparison, trend, anomaly, general
 

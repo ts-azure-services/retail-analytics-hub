@@ -16,7 +16,7 @@ import { Button } from './components/ui/button'
 import { List } from '@phosphor-icons/react'
 
 type View = 'dashboard' | 'detail' | 'review-table'
-type ReviewFilter = 'all' | 'positive' | 'negative'
+type ReviewFilter = 'all' | 'positive' | 'negative' | 'needs_review'
 
 function App() {
   const isMobile = useIsMobile()
@@ -50,6 +50,9 @@ function App() {
   const [customerReviewsMessages, setCustomerReviewsMessages] = useKV<ChatMessage[]>('chat-messages-customer-reviews', [])
   
   const [isLoading, setIsLoading] = useState(false)
+
+  // Track which tabs have already had their auto-query fired
+  const autoQueriedTabsRef = useRef<Set<string>>(new Set())
 
   // Digest tab state (Agent 2)
   const AGENT2_URL = 'http://localhost:8002'
@@ -338,6 +341,28 @@ Provide a helpful, concise response about the retail data. Keep responses under 
   const handleMetricUpdate = () => {
   }
 
+  // Auto-fire "tell me what's going on" when a metric tab is first visited
+  const AUTO_QUERY_TABS: TabId[] = ['main', 'omnichannel', 'customer-engagement', 'inventory-replenishment', 'customer-reviews']
+  useEffect(() => {
+    if (!AUTO_QUERY_TABS.includes(activeTab)) return
+    if (autoQueriedTabsRef.current.has(activeTab)) return
+    // Don't fire while another query is in-flight
+    if (isLoading) return
+    const currentMessages = getActiveMessages()
+    if (currentMessages && currentMessages.length > 0) {
+      // Already has messages (persisted from a prior session) — skip
+      autoQueriedTabsRef.current.add(activeTab)
+      return
+    }
+    // Capture the tab for the closure; only mark as queried when the query actually fires
+    const tabToQuery = activeTab
+    const timer = setTimeout(() => {
+      autoQueriedTabsRef.current.add(tabToQuery)
+      handleSendMessage('Tell me what\'s going on')
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [activeTab, isLoading])  // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleMetricClick = (metric: MetricData) => {
     // Customer reviews tiles → show review records table
     if (activeTab === 'customer-reviews') {
@@ -350,8 +375,11 @@ Provide a helpful, concise response about the retail data. Keep responses under 
       } else if (metric.id === 'cr-negative-pct') {
         setReviewFilter('negative')
         setReviewTitle('Negative Reviews')
+      } else if (metric.id === 'cr-needs-review') {
+        setReviewFilter('needs_review')
+        setReviewTitle('Reviews Needing Human Review')
       } else {
-        // Other review tiles (avg score, needs review, processed) → default detail view
+        // Other review tiles (avg score, processed) → default detail view
         setSelectedMetric(metric)
         const metricBreakdown = generateMetricBreakdown(metric.id)
         setBreakdown(metricBreakdown)
@@ -371,7 +399,6 @@ Provide a helpful, concise response about the retail data. Keep responses under 
   const handleBackToDashboard = () => {
     setCurrentView('dashboard')
     setSelectedMetric(null)
-    setActiveMessages(() => [])
   }
 
   const handleRefreshChat = () => {
@@ -380,8 +407,9 @@ Provide a helpful, concise response about the retail data. Keep responses under 
 
   const handleTabChange = (tab: TabId) => {
     setActiveTab(tab)
-    if (currentView === 'detail') {
-      handleBackToDashboard()
+    if (currentView !== 'dashboard') {
+      setCurrentView('dashboard')
+      setSelectedMetric(null)
     }
     setMobileMenuOpen(false)
   }

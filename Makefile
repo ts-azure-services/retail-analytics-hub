@@ -186,6 +186,7 @@ run-all-sweeps: ## [core] Run ALL 9 parameter sweeps in parallel (isolated DBs)
 	@echo "Logs: $(SWEEPS_DIR)/<sweep>.log"
 	@echo ""
 	@mkdir -p $(SWEEPS_DIR)
+	@rm -f $(SWEEPS_DIR)/.pids
 	@# Launch each sweep as a background process with its own log
 	@for s in $(ALL_SWEEPS); do \
 		cp local_postgres.duckdb $(SWEEPS_DIR)/$${s}_postgres.duckdb; \
@@ -194,6 +195,7 @@ run-all-sweeps: ## [core] Run ALL 9 parameter sweeps in parallel (isolated DBs)
 		LOCAL_COSMOS_DB=$(CURDIR)/$(SWEEPS_DIR)/$${s}_cosmos.duckdb \
 		uv run python -m simulation.run_simulation --sweep $$s --sweep-type grid \
 			> $(SWEEPS_DIR)/$$s.log 2>&1 & \
+		echo $$! >> $(SWEEPS_DIR)/.pids; \
 		echo "  Started: $$s (pid $$!)"; \
 	done; \
 	echo ""; \
@@ -258,6 +260,45 @@ merge-sweeps: ## [core] Merge all sweep results into main databases
 
 merge-sweeps-dry: ## [util] Preview what merge-sweeps would do (no writes)
 	uv run seed-data/merge_sweeps.py --dry-run
+
+stop-sweeps: ## [core] Kill all running sweep processes, close DBs, and clean up
+	@echo ""
+	@echo "============================================================"
+	@echo "🛑 Stopping all sweep processes..."
+	@echo "============================================================"
+	@if [ -f $(SWEEPS_DIR)/.pids ]; then \
+		echo "  Sending SIGTERM to sweep processes..."; \
+		while read pid; do \
+			if kill -0 $$pid 2>/dev/null; then \
+				kill -TERM $$pid 2>/dev/null && echo "  SIGTERM → pid $$pid"; \
+			fi; \
+		done < $(SWEEPS_DIR)/.pids; \
+		echo "  Waiting 5s for graceful shutdown..."; \
+		sleep 5; \
+		while read pid; do \
+			if kill -0 $$pid 2>/dev/null; then \
+				kill -9 $$pid 2>/dev/null && echo "  SIGKILL → pid $$pid (force)"; \
+			fi; \
+		done < $(SWEEPS_DIR)/.pids; \
+		rm -f $(SWEEPS_DIR)/.pids; \
+		echo "  ✓ All sweep processes stopped"; \
+	else \
+		echo "  No .pids file found — killing by process name..."; \
+		pkill -TERM -f 'simulation.run_simulation --sweep' 2>/dev/null || true; \
+		sleep 3; \
+		pkill -9 -f 'simulation.run_simulation --sweep' 2>/dev/null || true; \
+		echo "  ✓ Sweep processes stopped (by pattern match)"; \
+	fi
+	@echo "  Removing stale WAL files..."
+	@rm -f $(SWEEPS_DIR)/*.duckdb.wal
+	@echo "  ✓ WAL files cleaned"
+	@echo "============================================================"
+	@echo "  Running clean-sweeps to remove all sweep data..."
+	@$(MAKE) --no-print-directory clean-sweeps
+	@echo "============================================================"
+	@echo "✓ All sweep processes stopped and cleaned up"
+	@echo "============================================================"
+	@echo ""
 
 clean-sweeps: ## [core] Remove sweep-isolated database files
 	@echo "🗑  Removing sweep databases..."
@@ -374,7 +415,7 @@ dashboard-audit-fix: ## [util] Fix npm audit vulnerabilities
 
 
 ##@ Agents
-agents-login: ## [prereq] Refresh Azure CLI login (required for Azure AD auth in containers)
+agents-login: ## [core] Pre-req: Refresh Azure CLI login (required for Azure AD auth in containers)
 	@echo "Refreshing Azure CLI login..."
 	az login
 	@echo "Azure CLI tokens updated in ~/.azure"
@@ -382,7 +423,11 @@ agents-login: ## [prereq] Refresh Azure CLI login (required for Azure AD auth in
 agents-build: ## [core] Build agent Docker images
 	docker compose -f agents/docker-compose.yml build --no-cache
 
-agents-up: agents-login ## [core] Start agent services (detached)
+agents-up: ## [core] Start agent services (detached)
+	@read -p "Login? (y/n): " login_choice; \
+	if [ "$$login_choice" = "y" ] || [ "$$login_choice" = "Y" ]; then \
+		$(MAKE) agents-login; \
+	fi
 	docker compose -f agents/docker-compose.yml up -d
 
 agents-down: ## [core] Stop agent services
@@ -399,10 +444,18 @@ agent3-dev: ## [util] Start Agent 3 with auto-reload
 
 
 ##@ Help
-help: ## Show this help message (grouped by sections)
+help: ## [util] Show this help message
+	@echo ""
+	@echo "\033[1;36m╔══════════════════════════════════════════════════════════════════════╗\033[0m"
+	@echo "\033[1;36m║                        Retail Analytics Hub                          ║\033[0m"
+	@echo "\033[1;36m╚══════════════════════════════════════════════════════════════════════╝\033[0m"
+	@echo ""
+	@echo "  \033[36m●\033[0m \033[36mcore\033[0m = Primary workflows    \033[33m○\033[0m \033[33mutil\033[0m = Utilities"
+	@echo ""
 	@awk 'BEGIN {FS = ":.*?## "} \
 		/^##@/ {printf "\n\033[1;35m%s\033[0m\n", substr($$0, 5)} \
-		/^[a-zA-Z0-9_.-]+:.*?## \[core\]/ {gsub(/\[core\] */, "", $$2); printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2; next} \
-		/^[a-zA-Z0-9_.-]+:.*?## \[util\]/ {gsub(/\[util\] */, "", $$2); printf "  \033[33m%-30s\033[0m %s\n", $$1, $$2; next} \
-		/^[a-zA-Z0-9_.-]+:.*?## / {printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2}' \
+		/^[a-zA-Z0-9_.-]+:.*?## \[core\]/ {gsub(/\[core\] */, "", $$2); printf "  \033[36m●\033[0m \033[36m%-38s\033[0m %s\n", $$1, $$2; next} \
+		/^[a-zA-Z0-9_.-]+:.*?## \[util\]/ {gsub(/\[util\] */, "", $$2); printf "  \033[33m○\033[0m \033[33m%-38s\033[0m %s\n", $$1, $$2; next} \
+		/^[a-zA-Z0-9_.-]+:.*?## / {printf "    %-40s %s\n", $$1, $$2}' \
 		$(MAKEFILE_LIST)
+	@echo ""

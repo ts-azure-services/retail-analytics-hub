@@ -231,17 +231,23 @@ Generate docs/dashboard.md documenting the dashboard application. Structure:
    - Customer Reviews (6): cr-total-reviews, cr-positive-pct, cr-negative-pct, cr-avg-score, cr-needs-review, cr-processed-pct
 
 5. **Agent Integration** — Table with columns: Agent, Port, Purpose, Trigger. Cover all three agents:
-   - Agent 1 (Explainer, 8001): chat panel Q&A, triggered by user message, falls back to Spark LLM if unavailable
+   - Agent 1 (Explainer, 8001): chat panel Q&A, triggered by user message AND auto-fires on tab activation, falls back to Spark LLM if unavailable
    - Agent 2 (Narrative, 8002): executive digest, triggered at server startup + manual regenerate
    - Agent 3 (Sentiment, 8003): review sentiment processing, triggered at server startup via POST /retry
 
-6. **Tech Stack** — Table with columns: Layer, Technology, Version. Cover: React 19, Vite 7, TypeScript 5.7, shadcn/ui (Radix UI), Tailwind CSS 4, D3.js + Recharts, Framer Motion 12, @tanstack/react-query 5, Phosphor Icons, Express 5, DuckDB (duckdb-async).
+6. **Analytics Assistant** — Document the auto-query behavior and tab navigation:
+   - **Auto-Query on Tab Activation**: When a metric tab (Main, Omnichannel, Customer Engagement, Inventory Replenishment, Customer Reviews) is visited for the first time in a session with no existing messages, the dashboard sends "Tell me what's going on" to Agent 1 after a 500ms delay. Digest tab is excluded.
+   - **Serialized Queries**: Only one auto-query runs at a time; each tab waits for the prior tab's query to finish (`isLoading` guard). Switching quickly is safe.
+   - **Tab Navigation Behavior**: Include a table covering: serialized queries, switching quickly, returning to a tab, drill-down and back, tab switching (per-tab localStorage persistence via useKV), Refresh Chat behavior.
+   - **Recommended Navigation Flow**: No special pauses needed. Navigate naturally through tabs in sequence; each auto-query fires after the previous completes.
 
-7. **Server & API** — Note the Express server runs on port 3001 (configurable via `DASHBOARD_API_PORT`). Table with columns: Method, Endpoint, Description. List: GET /api/health, GET /api/metrics/:tab, GET /api/reviews (with filter param), GET /api/digest.
+7. **Tech Stack** — Table with columns: Layer, Technology, Version. Cover: React 19, Vite 7, TypeScript 5.7, shadcn/ui (Radix UI), Tailwind CSS 4, D3.js + Recharts, Framer Motion 12, @tanstack/react-query 5, Phosphor Icons, Express 5, DuckDB (duckdb-async).
 
-8. **Port Map** — Table with columns: Service, Port, Configurable. Cover: Vite dev server (5173), Express API (3001), Agent 1 (8001), Agent 2 (8002), Agent 3 (8003).
+8. **Server & API** — Note the Express server runs on port 3001 (configurable via `DASHBOARD_API_PORT`). Table with columns: Method, Endpoint, Description. List: GET /api/health, GET /api/metrics/:tab, GET /api/reviews (with filter param: all|positive|negative|needs_review), GET /api/digest.
 
-9. **Key Components** — Table with columns: Component, Purpose. Cover: NavigationSidebar, DashboardView, MetricTile, MetricDetailView, ChatInterface, DigestView, ReviewTableView. Note that MetricTile includes animated number counters (400ms ease-out), D3 sparklines with trend-colored borders, and a pulse glow on the live indicator.
+9. **Port Map** — Table with columns: Service, Port, Configurable. Cover: Vite dev server (5173), Express API (3001), Agent 1 (8001), Agent 2 (8002), Agent 3 (8003).
+
+10. **Key Components** — Table with columns: Component, Purpose. Cover: NavigationSidebar, DashboardView, MetricTile, MetricDetailView, ChatInterface, DigestView, ReviewTableView. Note that MetricTile includes animated number counters (400ms ease-out), D3 sparklines with trend-colored borders, and a pulse glow on the live indicator.
 
 Constraints:
 - No Makefile commands or usage instructions

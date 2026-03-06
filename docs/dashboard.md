@@ -124,11 +124,40 @@ Three AI agents connect to the dashboard:
 
 | Agent | Port | Purpose | Trigger |
 |-------|------|---------|---------|
-| **Agent 1 — Explainer** | 8001 | Chat panel Q&A about metrics | User sends a message in the chat panel |
+| **Agent 1 — Explainer** | 8001 | Chat panel Q&A about metrics | User sends a message in the chat panel; auto-fires on tab activation |
 | **Agent 2 — Narrative** | 8002 | Executive digest generation | Server startup + manual regenerate |
 | **Agent 3 — Sentiment** | 8003 | Customer review sentiment processing | Server startup (`POST /retry`) |
 
 If Agent 1 is unavailable, the chat panel falls back to the Spark LLM (`gpt-4o-mini`) for responses.
+
+## Analytics Assistant
+
+### Auto-Query on Tab Activation
+
+When a metric tab is visited for the first time in a session and has no existing chat messages, the dashboard automatically sends **"Tell me what's going on"** to Agent 1. This applies to all 5 metric tabs: Main, Omnichannel, Customer Engagement, Inventory Replenishment, and Customer Reviews. The Digest tab is excluded (it uses Agent 2 instead).
+
+The auto-query fires after a 500ms delay to let the tab render. If another query is already in-flight, the tab waits until the previous one completes before firing — Agent 1's workflow does not support concurrent executions on the same instance.
+
+### Tab Navigation Behavior
+
+| Behavior | Detail |
+|----------|--------|
+| **Serialized queries** | Only one auto-query runs at a time. Each tab waits for the prior tab's query to finish (`isLoading` guard). |
+| **Switching quickly** | Safe — if you click through tabs rapidly, each tab will fire its auto-query only after the previous one completes. |
+| **Returning to a tab** | If the tab already has chat messages (from auto-query or user interaction), the auto-query does not re-fire. |
+| **Drill-down and back** | Navigating into a metric detail or review table view and returning preserves all chat messages. |
+| **Tab switching** | Chat history is per-tab and persisted in localStorage via `useKV`. Switching tabs shows that tab's conversation. |
+| **Refresh Chat** | Clears the current tab's messages. A new auto-query will not fire (the tab is already marked as queried for this session). |
+
+### Recommended Navigation Flow
+
+No special pauses are needed between tab switches. Navigate naturally:
+
+1. Land on **Main** → auto-query fires, response appears
+2. Switch to **Omnichannel** → waits for Main to finish if still loading, then fires
+3. Continue through **Customer Engagement** → **Inventory Replenishment** → **Customer Reviews**
+
+Each tab's Analytics Assistant response persists across tab switches and drill-down navigation.
 
 ## Tech Stack
 
@@ -154,7 +183,7 @@ The Express server runs on port `3001` (configurable via `DASHBOARD_API_PORT`) a
 |--------|----------|-------------|
 | GET | `/api/health` | Health check |
 | GET | `/api/metrics/:tab` | Returns live metric values for a tab from DuckDB |
-| GET | `/api/reviews` | Customer review records (optional `?filter=all\|positive\|negative`) |
+| GET | `/api/reviews` | Customer review records (optional `?filter=all\|positive\|negative\|needs_review`) |
 | GET | `/api/digest` | Cached digest status: `ready`, `generating`, or `none` |
 
 The server opens DuckDB in read-only mode. SQL queries are defined per-metric in `shared/metric-queries.ts` and run concurrently.

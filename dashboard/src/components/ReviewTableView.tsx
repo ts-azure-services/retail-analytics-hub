@@ -17,7 +17,7 @@ import { motion } from 'framer-motion'
 import { cn } from '@/lib/utils'
 
 interface ReviewTableViewProps {
-  filter: 'all' | 'positive' | 'negative'
+  filter: 'all' | 'positive' | 'negative' | 'needs_review'
   title: string
   onBack: () => void
 }
@@ -89,7 +89,9 @@ export function ReviewTableView({ filter, title, onBack }: ReviewTableViewProps)
               ? 'All customer reviews'
               : filter === 'positive'
                 ? 'Reviews with positive or very positive sentiment'
-                : 'Reviews with negative or very negative sentiment'}
+                : filter === 'negative'
+                  ? 'Reviews with negative or very negative sentiment'
+                  : 'Reviews flagged for human review'}
           </p>
         </div>
 

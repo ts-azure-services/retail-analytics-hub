@@ -22,21 +22,18 @@ from agents.agent2_narrative.executors import (
 
 logger = logging.getLogger(__name__)
 
-_workflow = None
+def _build_workflow():
+    """Build a new narrative workflow instance.
 
-
-def get_workflow():
-    """Lazily build and cache the narrative workflow."""
-    global _workflow
-    if _workflow is not None:
-        return _workflow
-
+    A fresh instance is created per request because the agent_framework
+    Workflow does not allow concurrent executions on the same instance.
+    """
     intent_classifier = create_intent_classifier()
     data_analyzer = create_data_analyzer()
     deep_reasoner = create_deep_reasoner()
     narrative_formatter = create_narrative_formatter()
 
-    _workflow = (
+    return (
         WorkflowBuilder()
         .set_start_executor(prepare_input)
         .add_edge(prepare_input, intent_classifier)
@@ -47,12 +44,11 @@ def get_workflow():
         .add_edge(narrative_formatter, extract_output)
         .build()
     )
-    return _workflow
 
 
 async def _run_pipeline(input_payload: dict) -> str:
     """Run the narrative pipeline with the given payload."""
-    workflow = get_workflow()
+    workflow = _build_workflow()
     input_data = json.dumps(input_payload)
 
     logger.info("Starting narrative pipeline")

@@ -20,4 +20,39 @@ dist/
 *.log
 *.duckdb
 *.duckdb.wal
+
+# Sweep directory
 sweeps/
+
+# Local .terraform directories (providers, modules, caches)
+**/.terraform/*
+**/.terraform.lock.hcl~
+terraform/.terraform.lock.hcl~
+.terraform.lock.hcl
+terraform/.terraform.lock.hcl
+
+# State files
+*.tfstate
+*.tfstate.*
+
+# Terraform plan files
+*.tfplan
+*tfplan*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# CLI configuration files (may contain credentials)
+.terraformrc
+terraform.rc
+
+# Variable files (often contain secrets)
+*.tfvars
+*.tfvars.json
+
+# Override files (usually developer‑specific)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

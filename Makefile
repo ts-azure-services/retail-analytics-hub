@@ -15,12 +15,6 @@ clean-local: ## [util] Delete local DuckDB database files
 	@rm -f event_hubs.duckdb event_hubs.duckdb.wal
 	@echo "✓ Local databases removed"
 
-seed-cosmos: ## [util] Seed CosmosDB with 100 customer records (profile, contact, address, account info, tags)
-	cd seed-data && uv run seed_cosmos.py
-
-seed-postgres: ## [util] Seed PostgreSQL e-commerce data: 50 products, 100 orders with order items
-	cd seed-data && uv run seed_postgres.py
-
 seed-all: ## [util] Seed all databases: CosmosDB (customers) + PostgreSQL (products/orders)
 	@echo ""
 	@echo "============================================================"
@@ -37,20 +31,6 @@ seed-all: ## [util] Seed all databases: CosmosDB (customers) + PostgreSQL (produ
 	@echo "✓ All seeding operations completed!"
 	@echo "============================================================"
 	@echo ""
-
-seed-historical: ## [util] Generate historical data for Fabric notebooks
-	@echo ""
-	@echo "============================================================"
-	@echo "📊 Generating Historical Data for Analytics"
-	@echo "============================================================"
-	@echo ""
-	@echo "This generates inventory events to support forecasting, reorder point recommendations."
-	@echo ""
-	@cd seed-data && uv run seed_cosmos.py --historical --days 30 --skip-base
-	@echo ""
-	@echo "============================================================"
-	@echo "✓ Historical data generation completed!"
-	@echo "============================================================"
 
 seed-all-with-history: ## [core] ② Full seed: base data + historical data for analytics
 	@echo ""
@@ -441,6 +421,154 @@ agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
 
 agent3-dev: ## [util] Start Agent 3 with auto-reload
 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
+
+
+# =============================================================================
+##@ Infrastructure (Cloud)
+# =============================================================================
+
+tf: init plan apply ## [core] Provision CosmosDB + PostgreSQL via Terraform
+	@echo "\033[0;32m✅ Terraform infrastructure provisioned!\033[0m"
+
+init: ## [util] Initialize Terraform in infra/cloud (reuses cache, retries on network failure)
+	@set -e; \
+	for i in 1 2 3; do \
+		echo "Terraform init attempt $$i/3..."; \
+		TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/cloud init && exit 0; \
+		echo "Init failed, retrying in 10s..."; \
+		sleep 10; \
+	done; \
+	echo "Terraform init failed after 3 attempts"; \
+	exit 1
+
+init-clean: ## [util] Reinitialize Terraform from clean local state
+	rm -rf infra/cloud/.terraform.lock.hcl
+	rm -rf infra/cloud/.terraform
+	rm -rf infra/cloud/terraform.tfstate
+	rm -rf infra/cloud/terraform.tfstate.backup
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/cloud init --upgrade
+
+plan: ## [util] Preview Terraform changes
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud plan -out=tfplan
+
+apply: ## [util] Apply Terraform plan
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud apply -auto-approve tfplan
+
+delete-cloud: ## [core] Delete cloud resource groups (tag: tf=cloud) and purge soft-deleted resources
+	$(eval subscription_id := $(shell az account show --query id -o tsv))
+	$(eval tagged_rgs := $(shell az group list --subscription "$(subscription_id)" --query "[?tags.tf=='cloud'].name" -o tsv | tr -d '\r' | tr '\n' ' '))
+	@echo "Cloud resource groups to delete: $(tagged_rgs)"
+	@if [ -z "$(tagged_rgs)" ]; then \
+		echo "No cloud-tagged resource groups found — skipping."; \
+	else \
+		for rg in $(tagged_rgs); do \
+			echo "Deleting resource group: $$rg"; \
+			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
+		done; \
+	fi
+	@echo "Purging soft-deleted Key Vaults..."
+	@az keyvault list-deleted --subscription "$(subscription_id)" \
+		--query "[].name" -o tsv 2>/dev/null | \
+		while read -r name; do \
+			echo "  Purging: $$name"; \
+			az keyvault purge --subscription "$(subscription_id)" -n "$$name" 2>/dev/null || true; \
+		done
+	@echo "Cleaning up cloud Terraform state..."
+	@rm -f infra/cloud/terraform.tfstate infra/cloud/terraform.tfstate.backup infra/cloud/tfplan
+	@echo ""
+	@echo "\033[0;32m✅ Cloud infrastructure deleted and purged!\033[0m"
+
+# =============================================================================
+##@ Infrastructure (Local)
+# =============================================================================
+
+tf-local: init-local plan-local apply-local ## [core] Provision local Foundry resources via Terraform
+	@echo "\033[0;32m✅ Local Foundry infrastructure provisioned!\033[0m"
+
+init-local: ## [util] Initialize Terraform in infra/local (reuses cache, retries on network failure)
+	@set -e; \
+	for i in 1 2 3; do \
+		echo "Terraform init (local) attempt $$i/3..."; \
+		TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init && exit 0; \
+		echo "Init (local) failed, retrying in 10s..."; \
+		sleep 10; \
+	done; \
+	echo "Terraform init (local) failed after 3 attempts"; \
+	exit 1
+
+init-local-clean: ## [util] Reinitialize local Terraform from clean state
+	rm -rf infra/local/.terraform.lock.hcl
+	rm -rf infra/local/.terraform
+	rm -rf infra/local/terraform.tfstate
+	rm -rf infra/local/terraform.tfstate.backup
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init --upgrade
+
+plan-local: ## [util] Preview local Terraform changes
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local plan -out=tfplan-local
+
+apply-local: ## [util] Apply local Terraform plan
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local apply -auto-approve tfplan-local
+
+delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purge soft-deleted resources
+	$(eval subscription_id := $(shell az account show --query id -o tsv))
+	$(eval tagged_rgs := $(shell az group list --subscription "$(subscription_id)" --query "[?tags.tf=='local'].name" -o tsv | tr -d '\r' | tr '\n' ' '))
+	@echo "Local resource groups to delete: $(tagged_rgs)"
+	@if [ -z "$(tagged_rgs)" ]; then \
+		echo "No local-tagged resource groups found — skipping."; \
+	else \
+		for rg in $(tagged_rgs); do \
+			echo "Deleting resource group: $$rg"; \
+			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
+		done; \
+	fi
+	@echo "Purging soft-deleted Cognitive Services accounts..."
+	@az cognitiveservices account list-deleted --subscription "$(subscription_id)" \
+		--query "[].[name, location, resourceGroup]" -o tsv 2>/dev/null | \
+		while IFS=$$'\t' read -r name location rg; do \
+			echo "  Purging: $$name ($$location)"; \
+			az cognitiveservices account purge --subscription "$(subscription_id)" \
+				-l "$$location" -n "$$name" -g "$$rg" 2>/dev/null || true; \
+		done
+	@echo "Cleaning up local Terraform state..."
+	@rm -f infra/local/terraform.tfstate infra/local/terraform.tfstate.backup infra/local/tfplan-local
+	@echo ""
+	@echo "\033[0;32m✅ Local infrastructure deleted and purged!\033[0m"
 
 
 ##@ Help

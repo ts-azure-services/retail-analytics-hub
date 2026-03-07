@@ -20,7 +20,7 @@ def create_intent_classifier() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o-mini",
+        deployment_name=settings.gpt_4o_mini_deployment,
     )
     agent = ChatAgent(
         chat_client=client,
@@ -37,7 +37,7 @@ def create_data_analyzer() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o-mini",
+        deployment_name=settings.gpt_4o_mini_deployment,
     )
     agent = ChatAgent(
         chat_client=client,
@@ -54,7 +54,7 @@ def create_response_formatter() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o-mini",
+        deployment_name=settings.gpt_4o_mini_deployment,
     )
     agent = ChatAgent(
         chat_client=client,

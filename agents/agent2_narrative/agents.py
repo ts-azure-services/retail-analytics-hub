@@ -21,7 +21,7 @@ def create_intent_classifier() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o-mini",
+        deployment_name=settings.gpt_4o_mini_deployment,
     )
     agent = ChatAgent(
         chat_client=client,
@@ -32,13 +32,13 @@ def create_intent_classifier() -> AgentExecutor:
 
 
 def create_data_analyzer() -> AgentExecutor:
-    """Create the data analyzer AgentExecutor (gpt-4o for comprehensive synthesis)."""
+    """Create the data analyzer AgentExecutor (reasoning model for comprehensive synthesis)."""
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o",
+        deployment_name=settings.gpt_5_1_deployment,
     )
     agent = ChatAgent(
         chat_client=client,
@@ -49,13 +49,13 @@ def create_data_analyzer() -> AgentExecutor:
 
 
 def create_deep_reasoner() -> AgentExecutor:
-    """Create the deep reasoner AgentExecutor (gpt-4o for causal analysis)."""
+    """Create the deep reasoner AgentExecutor (reasoning model for causal analysis)."""
     settings = get_settings()
     client = AzureOpenAIChatClient(
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o",
+        deployment_name=settings.gpt_5_1_deployment,
     )
     agent = ChatAgent(
         chat_client=client,
@@ -72,7 +72,7 @@ def create_narrative_formatter() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name="gpt-4o-mini",
+        deployment_name=settings.gpt_4o_mini_deployment,
     )
     agent = ChatAgent(
         chat_client=client,

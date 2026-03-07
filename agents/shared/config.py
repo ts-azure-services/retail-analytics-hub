@@ -32,9 +32,12 @@ def get_azure_token_provider() -> Callable[[], str]:
 
 
 class Settings(BaseSettings):
-    """Centralised configuration loaded from environment / .env file."""
+    """Centralised configuration loaded from environment / local.env."""
 
-    model_config = {"env_file": str(_REPO_ROOT / "agents" / ".env"), "extra": "ignore"}
+    model_config = {
+        "env_file": str(_REPO_ROOT / "local.env"),
+        "extra": "ignore",
+    }
 
     # ── Azure OpenAI ──────────────────────────────────────────────
     azure_openai_endpoint: str = ""
@@ -43,6 +46,10 @@ class Settings(BaseSettings):
     # ── Model defaults (overridden per-agent via env) ─────────────
     agent_model: str = "gpt-4o-mini"
     agent_temperature: float = 0.3
+
+    # ── Deployment names (from Terraform / local.env) ─────────────
+    gpt_4o_mini_deployment: str = "gpt-4o-mini"
+    gpt_5_1_deployment: str = "gpt-5-1"
 
     # ── DuckDB paths ──────────────────────────────────────────────
     local_postgres_db: str = Field(

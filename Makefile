@@ -395,19 +395,10 @@ dashboard-audit-fix: ## [util] Fix npm audit vulnerabilities
 
 
 ##@ Agents
-agents-login: ## [core] Pre-req: Refresh Azure CLI login (required for Azure AD auth in containers)
-	@echo "Refreshing Azure CLI login..."
-	az login
-	@echo "Azure CLI tokens updated in ~/.azure"
-
 agents-build: ## [core] Build agent Docker images
 	docker compose -f agents/docker-compose.yml build --no-cache
 
 agents-up: ## [core] Start agent services (detached)
-	@read -p "Login? (y/n): " login_choice; \
-	if [ "$$login_choice" = "y" ] || [ "$$login_choice" = "Y" ]; then \
-		$(MAKE) agents-login; \
-	fi
 	docker compose -f agents/docker-compose.yml up -d
 
 agents-down: ## [core] Stop agent services
@@ -484,13 +475,17 @@ delete-cloud: ## [core] Delete cloud resource groups (tag: tf=cloud) and purge s
 			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
 		done; \
 	fi
-	@echo "Purging soft-deleted Key Vaults..."
-	@az keyvault list-deleted --subscription "$(subscription_id)" \
-		--query "[].name" -o tsv 2>/dev/null | \
-		while read -r name; do \
-			echo "  Purging: $$name"; \
-			az keyvault purge --subscription "$(subscription_id)" -n "$$name" 2>/dev/null || true; \
-		done
+	@echo "Purging soft-deleted Key Vaults from deleted resource groups..."
+	@if [ -n "$(tagged_rgs)" ]; then \
+		for rg in $(tagged_rgs); do \
+			az keyvault list-deleted --subscription "$(subscription_id)" \
+				--query "[?properties.vaultId && contains(properties.vaultId, '$$rg')].name" -o tsv 2>/dev/null | \
+				while read -r name; do \
+					echo "  Purging: $$name"; \
+					az keyvault purge --subscription "$(subscription_id)" -n "$$name" 2>/dev/null || true; \
+				done; \
+		done; \
+	fi
 	@echo "Cleaning up cloud Terraform state..."
 	@rm -f infra/cloud/terraform.tfstate infra/cloud/terraform.tfstate.backup infra/cloud/tfplan
 	@echo ""
@@ -500,21 +495,10 @@ delete-cloud: ## [core] Delete cloud resource groups (tag: tf=cloud) and purge s
 ##@ Infrastructure (Local)
 # =============================================================================
 
-tf-local: init-local plan-local apply-local ## [core] Provision local Foundry resources via Terraform
-	@echo "\033[0;32m✅ Local Foundry infrastructure provisioned!\033[0m"
+tf-local: init-local-clean plan-local apply-local create-agent-sp ## [core] Provision local OpenAI resources + service principal
+	@echo "\033[0;32m✅ Local OpenAI infrastructure provisioned!\033[0m"
 
-init-local: ## [util] Initialize Terraform in infra/local (reuses cache, retries on network failure)
-	@set -e; \
-	for i in 1 2 3; do \
-		echo "Terraform init (local) attempt $$i/3..."; \
-		TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init && exit 0; \
-		echo "Init (local) failed, retrying in 10s..."; \
-		sleep 10; \
-	done; \
-	echo "Terraform init (local) failed after 3 attempts"; \
-	exit 1
-
-init-local-clean: ## [util] Reinitialize local Terraform from clean state
+init-local-clean: ## [util] Initialize local Terraform from clean state
 	rm -rf infra/local/.terraform.lock.hcl
 	rm -rf infra/local/.terraform
 	rm -rf infra/local/terraform.tfstate
@@ -525,7 +509,14 @@ init-local-clean: ## [util] Reinitialize local Terraform from clean state
 		exit 1; \
 	fi; \
 	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init --upgrade
+	for i in 1 2 3; do \
+		echo "Terraform init (local) attempt $$i/3..."; \
+		ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init --upgrade && exit 0; \
+		echo "Init (local) failed, retrying in 10s..."; \
+		sleep 10; \
+	done; \
+	echo "Terraform init (local) failed after 3 attempts"; \
+	exit 1
 
 plan-local: ## [util] Preview local Terraform changes
 	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
@@ -545,6 +536,81 @@ apply-local: ## [util] Apply local Terraform plan
 	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
 	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local apply -auto-approve tfplan-local
 
+SP_NAME_PREFIX = simulation-workflows-agents
+
+create-agent-sp: ## [util] Create service principal for Docker agent containers
+	@echo ""
+	@echo "============================================================"
+	@echo "🔑 Creating Service Principal for Agent Containers"
+	@echo "============================================================"
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription. Run: az login"; \
+		exit 1; \
+	fi; \
+	OPENAI_ID=$$(terraform -chdir=infra/local output -raw openai_id 2>/dev/null); \
+	if [ -z "$$OPENAI_ID" ]; then \
+		echo "✗ Could not read openai_id from Terraform state. Run tf-local first."; \
+		exit 1; \
+	fi; \
+	RG_NAME=$$(terraform -chdir=infra/local output -raw resource_group_name 2>/dev/null); \
+	SP_DISPLAY_NAME="$(SP_NAME_PREFIX)-$${RG_NAME#rg-openai-}"; \
+	EXISTING=$$(az ad app list --filter "displayName eq '$$SP_DISPLAY_NAME'" --query "[0].appId" -o tsv 2>/dev/null); \
+	if [ -n "$$EXISTING" ]; then \
+		echo "Service principal '$$SP_DISPLAY_NAME' already exists (appId: $$EXISTING) — skipping creation."; \
+		if grep -q AZURE_CLIENT_ID local.env 2>/dev/null; then \
+			echo "Credentials already in local.env."; \
+		else \
+			echo "⚠  SP exists but credentials are not in local.env. Delete the SP and re-run to regenerate."; \
+		fi; \
+	else \
+		echo "Creating service principal: $$SP_DISPLAY_NAME"; \
+		SP_JSON=$$(az ad sp create-for-rbac \
+			--name "$$SP_DISPLAY_NAME" \
+			--role "Cognitive Services OpenAI User" \
+			--scopes "$$OPENAI_ID" \
+			--create-password false \
+			--only-show-errors \
+			-o json); \
+		if [ $$? -ne 0 ] || ! echo "$$SP_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then \
+			echo "✗ Failed to create service principal:"; \
+			echo "$$SP_JSON"; \
+			exit 1; \
+		fi; \
+		CLIENT_ID=$$(echo "$$SP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['appId'])"); \
+		TENANT_ID=$$(echo "$$SP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant'])"); \
+		echo "Adding short-lived credential (30 days)..."; \
+		CRED_END=$$(date -u -v+29d '+%Y-%m-%dT%H:%M:%SZ'); \
+		CRED_JSON=$$(az ad app credential reset \
+			--id "$$CLIENT_ID" \
+			--end-date "$$CRED_END" \
+			--append \
+			--only-show-errors \
+			-o json); \
+		if [ $$? -ne 0 ] || ! echo "$$CRED_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then \
+			echo "✗ Failed to create credential:"; \
+			echo "$$CRED_JSON"; \
+			echo "Cleaning up app registration..."; \
+			az ad app delete --id "$$CLIENT_ID" 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		CLIENT_SECRET=$$(echo "$$CRED_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])"); \
+		echo "Assigning additional role: Cognitive Services User"; \
+		az role assignment create \
+			--assignee "$$CLIENT_ID" \
+			--role "Cognitive Services User" \
+			--scope "$$OPENAI_ID" \
+			-o none; \
+		sed -i '' '/^# Service principal credentials/d;/^AZURE_TENANT_ID=/d;/^AZURE_CLIENT_ID=/d;/^AZURE_CLIENT_SECRET=/d' local.env 2>/dev/null || true; \
+		sed -i '' -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' local.env 2>/dev/null || true; \
+		echo "" >> local.env; \
+		echo "# Service principal credentials for Docker containers" >> local.env; \
+		echo "AZURE_TENANT_ID=$$TENANT_ID" >> local.env; \
+		echo "AZURE_CLIENT_ID=$$CLIENT_ID" >> local.env; \
+		echo "AZURE_CLIENT_SECRET=$$CLIENT_SECRET" >> local.env; \
+		echo "✓ Service principal created and credentials written to local.env"; \
+	fi
+
 delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purge soft-deleted resources
 	$(eval subscription_id := $(shell az account show --query id -o tsv))
 	$(eval tagged_rgs := $(shell az group list --subscription "$(subscription_id)" --query "[?tags.tf=='local'].name" -o tsv | tr -d '\r' | tr '\n' ' '))
@@ -557,13 +623,21 @@ delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purg
 			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
 		done; \
 	fi
-	@echo "Purging soft-deleted Cognitive Services accounts..."
+	@echo "Purging all soft-deleted Cognitive Services accounts..."
 	@az cognitiveservices account list-deleted --subscription "$(subscription_id)" \
-		--query "[].[name, location, resourceGroup]" -o tsv 2>/dev/null | \
-		while IFS=$$'\t' read -r name location rg; do \
-			echo "  Purging: $$name ($$location)"; \
+		--query "[].[id, name, location]" -o tsv 2>/dev/null | \
+		while IFS=$$'\t' read -r id name location; do \
+			rg_name=$$(echo "$$id" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
+			echo "  Purging: $$name ($$location) from $$rg_name"; \
 			az cognitiveservices account purge --subscription "$(subscription_id)" \
-				-l "$$location" -n "$$name" -g "$$rg" 2>/dev/null || true; \
+				-l "$$location" -n "$$name" -g "$$rg_name" 2>/dev/null || true; \
+		done
+	@echo "Cleaning up Entra ID app registrations (simulation-workflows-agents-*)..."
+	@az ad app list --filter "startswith(displayName, 'simulation-workflows-agents-')" \
+		--query "[].{id:id, name:displayName}" -o tsv 2>/dev/null | \
+		while IFS=$$'\t' read -r app_id app_name; do \
+			echo "  Deleting app registration: $$app_name"; \
+			az ad app delete --id "$$app_id" 2>/dev/null || true; \
 		done
 	@echo "Cleaning up local Terraform state..."
 	@rm -f infra/local/terraform.tfstate infra/local/terraform.tfstate.backup infra/local/tfplan-local

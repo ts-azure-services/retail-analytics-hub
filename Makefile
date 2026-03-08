@@ -1,3 +1,156 @@
+# =============================================================================
+##@ Infrastructure (Local)
+# =============================================================================
+
+tf-local: init-local-clean plan-local apply-local create-agent-sp ## [core] Provision local OpenAI resources + service principal
+	@echo "\033[0;32m✅ Local OpenAI infrastructure provisioned!\033[0m"
+
+init-local-clean: ## [util] Initialize local Terraform from clean state
+	rm -rf infra/local/.terraform.lock.hcl
+	rm -rf infra/local/.terraform
+	rm -rf infra/local/terraform.tfstate
+	rm -rf infra/local/terraform.tfstate.backup
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	for i in 1 2 3; do \
+		echo "Terraform init (local) attempt $$i/3..."; \
+		ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init --upgrade && exit 0; \
+		echo "Init (local) failed, retrying in 10s..."; \
+		sleep 10; \
+	done; \
+	echo "Terraform init (local) failed after 3 attempts"; \
+	exit 1
+
+plan-local: ## [util] Preview local Terraform changes
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local plan -out=tfplan-local
+
+apply-local: ## [util] Apply local Terraform plan
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local apply -auto-approve tfplan-local
+
+SP_NAME_PREFIX = simulation-workflows-agents
+
+create-agent-sp: ## [util] Create service principal for Docker agent containers
+	@echo ""
+	@echo "============================================================"
+	@echo "🔑 Creating Service Principal for Agent Containers"
+	@echo "============================================================"
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription. Run: az login"; \
+		exit 1; \
+	fi; \
+	OPENAI_ID=$$(terraform -chdir=infra/local output -raw openai_id 2>/dev/null); \
+	if [ -z "$$OPENAI_ID" ]; then \
+		echo "✗ Could not read openai_id from Terraform state. Run tf-local first."; \
+		exit 1; \
+	fi; \
+	RG_NAME=$$(terraform -chdir=infra/local output -raw resource_group_name 2>/dev/null); \
+	SP_DISPLAY_NAME="$(SP_NAME_PREFIX)-$${RG_NAME#rg-openai-}"; \
+	EXISTING=$$(az ad app list --filter "displayName eq '$$SP_DISPLAY_NAME'" --query "[0].appId" -o tsv 2>/dev/null); \
+	if [ -n "$$EXISTING" ]; then \
+		echo "Service principal '$$SP_DISPLAY_NAME' already exists (appId: $$EXISTING) — skipping creation."; \
+		if grep -q AZURE_CLIENT_ID local.env 2>/dev/null; then \
+			echo "Credentials already in local.env."; \
+		else \
+			echo "⚠  SP exists but credentials are not in local.env. Delete the SP and re-run to regenerate."; \
+		fi; \
+	else \
+		echo "Creating service principal: $$SP_DISPLAY_NAME"; \
+		SP_JSON=$$(az ad sp create-for-rbac \
+			--name "$$SP_DISPLAY_NAME" \
+			--role "Cognitive Services OpenAI User" \
+			--scopes "$$OPENAI_ID" \
+			--create-password false \
+			--only-show-errors \
+			-o json); \
+		if [ $$? -ne 0 ] || ! echo "$$SP_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then \
+			echo "✗ Failed to create service principal:"; \
+			echo "$$SP_JSON"; \
+			exit 1; \
+		fi; \
+		CLIENT_ID=$$(echo "$$SP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['appId'])"); \
+		TENANT_ID=$$(echo "$$SP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant'])"); \
+		echo "Adding short-lived credential (30 days)..."; \
+		CRED_END=$$(date -u -v+29d '+%Y-%m-%dT%H:%M:%SZ'); \
+		CRED_JSON=$$(az ad app credential reset \
+			--id "$$CLIENT_ID" \
+			--end-date "$$CRED_END" \
+			--append \
+			--only-show-errors \
+			-o json); \
+		if [ $$? -ne 0 ] || ! echo "$$CRED_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then \
+			echo "✗ Failed to create credential:"; \
+			echo "$$CRED_JSON"; \
+			echo "Cleaning up app registration..."; \
+			az ad app delete --id "$$CLIENT_ID" 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		CLIENT_SECRET=$$(echo "$$CRED_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])"); \
+		echo "Assigning additional role: Cognitive Services User"; \
+		az role assignment create \
+			--assignee "$$CLIENT_ID" \
+			--role "Cognitive Services User" \
+			--scope "$$OPENAI_ID" \
+			-o none; \
+		sed -i '' '/^# Service principal credentials/d;/^AZURE_TENANT_ID=/d;/^AZURE_CLIENT_ID=/d;/^AZURE_CLIENT_SECRET=/d' local.env 2>/dev/null || true; \
+		sed -i '' -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' local.env 2>/dev/null || true; \
+		echo "" >> local.env; \
+		echo "# Service principal credentials for Docker containers" >> local.env; \
+		echo "AZURE_TENANT_ID=$$TENANT_ID" >> local.env; \
+		echo "AZURE_CLIENT_ID=$$CLIENT_ID" >> local.env; \
+		echo "AZURE_CLIENT_SECRET=$$CLIENT_SECRET" >> local.env; \
+		echo "✓ Service principal created and credentials written to local.env"; \
+	fi
+
+delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purge soft-deleted resources
+	$(eval subscription_id := $(shell az account show --query id -o tsv))
+	$(eval tagged_rgs := $(shell az group list --subscription "$(subscription_id)" --query "[?tags.tf=='local'].name" -o tsv | tr -d '\r' | tr '\n' ' '))
+	@echo "Local resource groups to delete: $(tagged_rgs)"
+	@if [ -z "$(tagged_rgs)" ]; then \
+		echo "No local-tagged resource groups found — skipping."; \
+	else \
+		for rg in $(tagged_rgs); do \
+			echo "Deleting resource group: $$rg"; \
+			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
+		done; \
+	fi
+	@echo "Purging all soft-deleted Cognitive Services accounts..."
+	@az cognitiveservices account list-deleted --subscription "$(subscription_id)" \
+		--query "[].[id, name, location]" -o tsv 2>/dev/null | \
+		while IFS=$$'\t' read -r id name location; do \
+			rg_name=$$(echo "$$id" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
+			echo "  Purging: $$name ($$location) from $$rg_name"; \
+			az cognitiveservices account purge --subscription "$(subscription_id)" \
+				-l "$$location" -n "$$name" -g "$$rg_name" 2>/dev/null || true; \
+		done
+	@echo "Cleaning up Entra ID app registrations (simulation-workflows-agents-*)..."
+	@az ad app list --filter "startswith(displayName, 'simulation-workflows-agents-')" \
+		--query "[].{id:id, name:displayName}" -o tsv 2>/dev/null | \
+		while IFS=$$'\t' read -r app_id app_name; do \
+			echo "  Deleting app registration: $$app_name"; \
+			az ad app delete --id "$$app_id" 2>/dev/null || true; \
+		done
+	@echo "Cleaning up local Terraform state..."
+	@rm -f infra/local/terraform.tfstate infra/local/terraform.tfstate.backup infra/local/tfplan-local
+	@echo ""
+	@echo "\033[0;32m✅ Local infrastructure deleted and purged!\033[0m"
+
 ##@ Data Seeding
 seed-local: ## [core] Seed local DuckDB databases (no Azure needed)
 	@echo ""
@@ -16,17 +169,8 @@ clean-local: ## [util] Delete local DuckDB database files
 	@echo "✓ Local databases removed"
 
 
-validate-cloud: ## [core] Compare local DuckDB row counts vs. cloud Postgres & Cosmos
-	uv run python -m sync.validate_cloud
-
 validate-local: ## [core] Validate local DuckDB databases (tables, schema, row counts)
 	uv run seed-data/validate_data.py --local
-
-validate-cosmos: ## [util] Compare local Cosmos DuckDB vs. cloud Azure Cosmos
-	uv run python -m sync.validate_cloud --cosmos
-
-validate-postgres: ## [util] Compare local Postgres DuckDB vs. cloud Azure Postgres
-	uv run python -m sync.validate_cloud --postgres
 
 
 ##@ Parameter Sweeps & ML
@@ -356,151 +500,6 @@ agents-logs: ## [util] Tail agent service logs
 # agent3-dev: ## [util] Start Agent 3 with auto-reload
 # 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
 
-
-# =============================================================================
-##@ Cloud Deployment
-# =============================================================================
-
-cloud-build: cloud-dashboard-build cloud-agents-build ## [core] Build all 4 images in ACR (no local Docker needed)
-	@echo "\033[0;32m✅ All images built in ACR!\033[0m"
-
-cloud-dashboard-build: ## [util] Build dashboard image in ACR
-	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
-	@if [ -z "$(ACR_NAME)" ]; then \
-		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
-		exit 1; \
-	fi
-	@echo "Building dashboard in ACR..."
-	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/
-
-cloud-agents-build: ## [util] Build all 3 agent images in ACR
-	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
-	@if [ -z "$(ACR_NAME)" ]; then \
-		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
-		exit 1; \
-	fi
-	@echo "Building agent images in ACR..."
-	az acr build --registry $(ACR_NAME) --image agent1-explainer:latest --platform linux/amd64 -f agents/agent1_explainer/Dockerfile .
-	az acr build --registry $(ACR_NAME) --image agent2-narrative:latest --platform linux/amd64 -f agents/agent2_narrative/Dockerfile .
-	az acr build --registry $(ACR_NAME) --image agent3-sentiment:latest --platform linux/amd64 -f agents/agent3_sentiment/Dockerfile .
-
-cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Container Apps
-	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
-	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
-	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
-	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
-	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
-	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
-	@if [ -z "$(ACR_SERVER)" ] || [ -z "$(RG)" ]; then \
-		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
-		exit 1; \
-	fi
-	@echo "Updating Container App images (with ACR registry + health probes)..."
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	@echo "Enabling health probes and min_replicas..."
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent2.yaml
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent3.yaml
-	@echo "\033[0;32m✅ All Container Apps updated with health probes!\033[0m"
-
-cloud-logs: ## [util] Tail Container App logs for all services
-	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
-	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
-	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
-	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
-	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
-	@if [ -z "$(RG)" ]; then \
-		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
-		exit 1; \
-	fi
-	@echo "Tailing logs for all Container Apps..."
-	@echo "Dashboard: $(DASHBOARD_APP)"
-	@echo "Agent 1:   $(AGENT1_APP)"
-	@echo "Agent 2:   $(AGENT2_APP)"
-	@echo "Agent 3:   $(AGENT3_APP)"
-	@echo ""
-	az containerapp logs show -n "$(DASHBOARD_APP)" -g "$(RG)" --follow &
-	az containerapp logs show -n "$(AGENT1_APP)" -g "$(RG)" --follow &
-	az containerapp logs show -n "$(AGENT2_APP)" -g "$(RG)" --follow &
-	az containerapp logs show -n "$(AGENT3_APP)" -g "$(RG)" --follow &
-	@wait
-
-
-# =============================================================================
-##@ Data Sync
-# =============================================================================
-
-sync-export: ## [core] (Local) Export local DuckDB data to sync/staging/ (Parquet + NDJSON)
-	@echo ""
-	@echo "============================================================"
-	@echo "Exporting local DuckDB data to sync/staging/"
-	@echo "============================================================"
-	@echo ""
-	@echo "--- PostgreSQL (Parquet) ---"
-	@uv run python -m sync.export_postgres
-	@echo ""
-	@echo "--- CosmosDB (NDJSON) ---"
-	@uv run python -m sync.export_cosmos
-	@echo ""
-	@echo "--- Event Hub (NDJSON) ---"
-	@uv run python -m sync.export_eventhub
-	@echo ""
-	@echo "============================================================"
-	@echo "Export complete. Files in sync/staging/"
-	@echo "============================================================"
-
-sync-upload: ## [core] Upload sync/staging/ to Azure Blob Storage
-	@echo "Uploading staged files to Azure Blob Storage..."
-	@uv run python -m sync.upload
-
-sync-import: ## [core] Trigger importer Container App Job in Azure
-	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
-	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
-	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ]; then \
-		echo "ERROR: Could not read importer_job_name or resource_group from Terraform output."; \
-		echo "Run 'make tf' first to provision cloud infrastructure."; \
-		exit 1; \
-	fi
-	@echo "Starting importer job: $(IMPORTER_JOB) in $(RG)..."
-	az containerapp job start -n "$(IMPORTER_JOB)" -g "$(RG)"
-
-sync-all: sync-export sync-upload sync-import ## [core] Full sync pipeline: export + upload + import
-
-sync-clean: ## [util] (Local) Remove sync/staging/ directory
-	@echo "Removing sync/staging/..."
-	@rm -rf sync/staging/
-	@echo "Done."
-
-sync-push: ## [util] Build importer image in ACR (cloud-native, avoids arch conflicts)
-	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
-	@if [ -z "$(ACR_NAME)" ]; then \
-		echo "ERROR: Could not read container_registry_name from Terraform output."; \
-		exit 1; \
-	fi
-	@echo "Building sync-importer in ACR (az acr build)..."
-	az acr build --registry $(ACR_NAME) --image sync-importer:latest --platform linux/amd64 sync/importer/
-
-sync-deploy: sync-push ## [core] Build image in ACR, then update Container App Job
-	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
-	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
-	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
-	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ] || [ -z "$(ACR_SERVER)" ]; then \
-		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
-		exit 1; \
-	fi
-	@echo "Configuring ACR registry on importer job..."
-	az containerapp job registry set -n "$(IMPORTER_JOB)" -g "$(RG)" \
-		--server "$(ACR_SERVER)" --identity system
-	@echo "Updating Container App Job image to $(ACR_SERVER)/sync-importer:latest..."
-	az containerapp job update -n "$(IMPORTER_JOB)" -g "$(RG)" \
-		--image "$(ACR_SERVER)/sync-importer:latest"
-	@echo "✓ Importer job updated with latest image"
-
-
 # =============================================================================
 ##@ Infrastructure (Cloud)
 # =============================================================================
@@ -596,187 +595,94 @@ delete-cloud: ## [core] Delete cloud resource groups (tag: tf=cloud) and purge s
 	@echo ""
 	@echo "\033[0;32m✅ Cloud infrastructure deleted and purged!\033[0m"
 
+
+
 # =============================================================================
-##@ Infrastructure (Local)
+##@ Data Sync - build importer image
 # =============================================================================
-
-tf-local: init-local-clean plan-local apply-local create-agent-sp ## [core] Provision local OpenAI resources + service principal
-	@echo "\033[0;32m✅ Local OpenAI infrastructure provisioned!\033[0m"
-
-init-local-clean: ## [util] Initialize local Terraform from clean state
-	rm -rf infra/local/.terraform.lock.hcl
-	rm -rf infra/local/.terraform
-	rm -rf infra/local/terraform.tfstate
-	rm -rf infra/local/terraform.tfstate.backup
-	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
-	if [ -z "$$SUBSCRIPTION_ID" ]; then \
-		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+sync-push: ## [util] Build importer image in ACR (cloud-native, avoids arch conflicts)
+	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
+	@if [ -z "$(ACR_NAME)" ]; then \
+		echo "ERROR: Could not read container_registry_name from Terraform output."; \
 		exit 1; \
-	fi; \
-	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
-	for i in 1 2 3; do \
-		echo "Terraform init (local) attempt $$i/3..."; \
-		ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/local init --upgrade && exit 0; \
-		echo "Init (local) failed, retrying in 10s..."; \
-		sleep 10; \
-	done; \
-	echo "Terraform init (local) failed after 3 attempts"; \
-	exit 1
+	fi
+	@echo "Building sync-importer in ACR (az acr build)..."
+	az acr build --registry $(ACR_NAME) --image sync-importer:latest --platform linux/amd64 sync/importer/
 
-plan-local: ## [util] Preview local Terraform changes
-	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
-	if [ -z "$$SUBSCRIPTION_ID" ]; then \
-		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+sync-deploy: sync-push ## [core] Build image in ACR, then update Container App Job
+	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
+	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ] || [ -z "$(ACR_SERVER)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
 		exit 1; \
-	fi; \
-	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local plan -out=tfplan-local
+	fi
+	@echo "Configuring ACR registry on importer job..."
+	az containerapp job registry set -n "$(IMPORTER_JOB)" -g "$(RG)" \
+		--server "$(ACR_SERVER)" --identity system
+	@echo "Updating Container App Job image to $(ACR_SERVER)/sync-importer:latest..."
+	az containerapp job update -n "$(IMPORTER_JOB)" -g "$(RG)" \
+		--image "$(ACR_SERVER)/sync-importer:latest"
+	@echo "✓ Importer job updated with latest image"
 
-apply-local: ## [util] Apply local Terraform plan
-	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
-	if [ -z "$$SUBSCRIPTION_ID" ]; then \
-		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
-		exit 1; \
-	fi; \
-	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/local apply -auto-approve tfplan-local
+# =============================================================================
+##@ Data Sync - trigger importer job
+# =============================================================================
+sync-clean: ## [util] (Local) Remove sync/staging/ directory
+	@echo "Removing sync/staging/..."
+	@rm -rf sync/staging/
+	@echo "Done."
 
-SP_NAME_PREFIX = simulation-workflows-agents
-
-create-agent-sp: ## [util] Create service principal for Docker agent containers
+sync-export: ## [util] (Local) Export local DuckDB data to sync/staging/ (Parquet + NDJSON)
 	@echo ""
 	@echo "============================================================"
-	@echo "🔑 Creating Service Principal for Agent Containers"
+	@echo "Exporting local DuckDB data to sync/staging/"
 	@echo "============================================================"
-	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
-	if [ -z "$$SUBSCRIPTION_ID" ]; then \
-		echo "No active Azure subscription. Run: az login"; \
-		exit 1; \
-	fi; \
-	OPENAI_ID=$$(terraform -chdir=infra/local output -raw openai_id 2>/dev/null); \
-	if [ -z "$$OPENAI_ID" ]; then \
-		echo "✗ Could not read openai_id from Terraform state. Run tf-local first."; \
-		exit 1; \
-	fi; \
-	RG_NAME=$$(terraform -chdir=infra/local output -raw resource_group_name 2>/dev/null); \
-	SP_DISPLAY_NAME="$(SP_NAME_PREFIX)-$${RG_NAME#rg-openai-}"; \
-	EXISTING=$$(az ad app list --filter "displayName eq '$$SP_DISPLAY_NAME'" --query "[0].appId" -o tsv 2>/dev/null); \
-	if [ -n "$$EXISTING" ]; then \
-		echo "Service principal '$$SP_DISPLAY_NAME' already exists (appId: $$EXISTING) — skipping creation."; \
-		if grep -q AZURE_CLIENT_ID local.env 2>/dev/null; then \
-			echo "Credentials already in local.env."; \
-		else \
-			echo "⚠  SP exists but credentials are not in local.env. Delete the SP and re-run to regenerate."; \
-		fi; \
-	else \
-		echo "Creating service principal: $$SP_DISPLAY_NAME"; \
-		SP_JSON=$$(az ad sp create-for-rbac \
-			--name "$$SP_DISPLAY_NAME" \
-			--role "Cognitive Services OpenAI User" \
-			--scopes "$$OPENAI_ID" \
-			--create-password false \
-			--only-show-errors \
-			-o json); \
-		if [ $$? -ne 0 ] || ! echo "$$SP_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then \
-			echo "✗ Failed to create service principal:"; \
-			echo "$$SP_JSON"; \
-			exit 1; \
-		fi; \
-		CLIENT_ID=$$(echo "$$SP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['appId'])"); \
-		TENANT_ID=$$(echo "$$SP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant'])"); \
-		echo "Adding short-lived credential (30 days)..."; \
-		CRED_END=$$(date -u -v+29d '+%Y-%m-%dT%H:%M:%SZ'); \
-		CRED_JSON=$$(az ad app credential reset \
-			--id "$$CLIENT_ID" \
-			--end-date "$$CRED_END" \
-			--append \
-			--only-show-errors \
-			-o json); \
-		if [ $$? -ne 0 ] || ! echo "$$CRED_JSON" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then \
-			echo "✗ Failed to create credential:"; \
-			echo "$$CRED_JSON"; \
-			echo "Cleaning up app registration..."; \
-			az ad app delete --id "$$CLIENT_ID" 2>/dev/null || true; \
-			exit 1; \
-		fi; \
-		CLIENT_SECRET=$$(echo "$$CRED_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])"); \
-		echo "Assigning additional role: Cognitive Services User"; \
-		az role assignment create \
-			--assignee "$$CLIENT_ID" \
-			--role "Cognitive Services User" \
-			--scope "$$OPENAI_ID" \
-			-o none; \
-		sed -i '' '/^# Service principal credentials/d;/^AZURE_TENANT_ID=/d;/^AZURE_CLIENT_ID=/d;/^AZURE_CLIENT_SECRET=/d' local.env 2>/dev/null || true; \
-		sed -i '' -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' local.env 2>/dev/null || true; \
-		echo "" >> local.env; \
-		echo "# Service principal credentials for Docker containers" >> local.env; \
-		echo "AZURE_TENANT_ID=$$TENANT_ID" >> local.env; \
-		echo "AZURE_CLIENT_ID=$$CLIENT_ID" >> local.env; \
-		echo "AZURE_CLIENT_SECRET=$$CLIENT_SECRET" >> local.env; \
-		echo "✓ Service principal created and credentials written to local.env"; \
-	fi
-
-delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purge soft-deleted resources
-	$(eval subscription_id := $(shell az account show --query id -o tsv))
-	$(eval tagged_rgs := $(shell az group list --subscription "$(subscription_id)" --query "[?tags.tf=='local'].name" -o tsv | tr -d '\r' | tr '\n' ' '))
-	@echo "Local resource groups to delete: $(tagged_rgs)"
-	@if [ -z "$(tagged_rgs)" ]; then \
-		echo "No local-tagged resource groups found — skipping."; \
-	else \
-		for rg in $(tagged_rgs); do \
-			echo "Deleting resource group: $$rg"; \
-			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
-		done; \
-	fi
-	@echo "Purging all soft-deleted Cognitive Services accounts..."
-	@az cognitiveservices account list-deleted --subscription "$(subscription_id)" \
-		--query "[].[id, name, location]" -o tsv 2>/dev/null | \
-		while IFS=$$'\t' read -r id name location; do \
-			rg_name=$$(echo "$$id" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
-			echo "  Purging: $$name ($$location) from $$rg_name"; \
-			az cognitiveservices account purge --subscription "$(subscription_id)" \
-				-l "$$location" -n "$$name" -g "$$rg_name" 2>/dev/null || true; \
-		done
-	@echo "Cleaning up Entra ID app registrations (simulation-workflows-agents-*)..."
-	@az ad app list --filter "startswith(displayName, 'simulation-workflows-agents-')" \
-		--query "[].{id:id, name:displayName}" -o tsv 2>/dev/null | \
-		while IFS=$$'\t' read -r app_id app_name; do \
-			echo "  Deleting app registration: $$app_name"; \
-			az ad app delete --id "$$app_id" 2>/dev/null || true; \
-		done
-	@echo "Cleaning up local Terraform state..."
-	@rm -f infra/local/terraform.tfstate infra/local/terraform.tfstate.backup infra/local/tfplan-local
 	@echo ""
-	@echo "\033[0;32m✅ Local infrastructure deleted and purged!\033[0m"
+	@echo "--- PostgreSQL (Parquet) ---"
+	@uv run python -m sync.export_postgres
+	@echo ""
+	@echo "--- CosmosDB (NDJSON) ---"
+	@uv run python -m sync.export_cosmos
+	@echo ""
+	@echo "--- Event Hub (NDJSON) ---"
+	@uv run python -m sync.export_eventhub
+	@echo ""
+	@echo "============================================================"
+	@echo "Export complete. Files in sync/staging/"
+	@echo "============================================================"
+
+sync-upload: ## [util] Upload sync/staging/ to Azure Blob Storage
+	@echo "Uploading staged files to Azure Blob Storage..."
+	@uv run python -m sync.upload
+
+sync-import: ## [util] Trigger importer Container App Job in Azure
+	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read importer_job_name or resource_group from Terraform output."; \
+		echo "Run 'make tf' first to provision cloud infrastructure."; \
+		exit 1; \
+	fi
+	@echo "Starting importer job: $(IMPORTER_JOB) in $(RG)..."
+	az containerapp job start -n "$(IMPORTER_JOB)" -g "$(RG)"
+
+sync-all: sync-export sync-upload sync-import ## [core] Full sync pipeline: export + upload + import
+
+validate-cloud: ## [core] Compare local DuckDB row counts vs. cloud Postgres & Cosmos
+	uv run python -m sync.validate_cloud
+
+validate-cosmos: ## [util] Compare local Cosmos DuckDB vs. cloud Azure Cosmos
+	uv run python -m sync.validate_cloud --cosmos
+
+validate-postgres: ## [util] Compare local Postgres DuckDB vs. cloud Azure Postgres
+	uv run python -m sync.validate_cloud --postgres
+
 
 # =============================================================================
 ##@ Fabric Integration
 # =============================================================================
-
-check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
-	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
-	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
-	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
-	echo "🔍 Current IP: $$CURRENT_IP"; \
-	echo "📡 Server: $$SERVER"; \
-	echo ""; \
-	FOUND=$$(az postgres flexible-server firewall-rule list --resource-group $$RG --name $$SERVER --query "[?startIpAddress=='$$CURRENT_IP'].name" -o tsv); \
-	if [ -n "$$FOUND" ]; then \
-		echo "\033[0;32m✓ Your IP $$CURRENT_IP is in the firewall allow list (Rule: $$FOUND)\033[0m"; \
-	else \
-		echo "\033[0;31m✗ Your IP $$CURRENT_IP is NOT in the firewall allow list\033[0m"; \
-		echo "\033[0;33m💡 Run 'make add-pg-firewall' to add it\033[0m"; \
-	fi
-
-add-pg-firewall: ## [util] Add your current IP to PostgreSQL firewall
-	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
-	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
-	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
-	az postgres flexible-server firewall-rule create \
-		--resource-group $$RG --name $$SERVER \
-		--rule-name "AllowMyIP" --start-ip-address $$CURRENT_IP --end-ip-address $$CURRENT_IP
-
-setup-cosmos-mirror: ## [core] ⑧ Setup Cosmos DB mirroring to Fabric (manual operation mainly in Fabric)
+setup-cosmos-mirror: ## [core] Setup Cosmos DB mirroring to Fabric (manual operation mainly in Fabric)
 	@echo "=========================================="
 	@echo "Setting up Microsoft Fabric Mirroring for Cosmos DB"
 	@echo "=========================================="
@@ -806,6 +712,30 @@ setup-cosmos-mirror: ## [core] ⑧ Setup Cosmos DB mirroring to Fabric (manual o
 	echo "Or add specific Fabric service IPs to firewall rules"
 	@echo ""
 	@echo "Then, create a shortcut to this data in the Lakehouse. Source: OneLake. Select individual containers (so it comes in as tables)."
+
+check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
+	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
+	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	echo "🔍 Current IP: $$CURRENT_IP"; \
+	echo "📡 Server: $$SERVER"; \
+	echo ""; \
+	FOUND=$$(az postgres flexible-server firewall-rule list --resource-group $$RG --name $$SERVER --query "[?startIpAddress=='$$CURRENT_IP'].name" -o tsv); \
+	if [ -n "$$FOUND" ]; then \
+		echo "\033[0;32m✓ Your IP $$CURRENT_IP is in the firewall allow list (Rule: $$FOUND)\033[0m"; \
+	else \
+		echo "\033[0;31m✗ Your IP $$CURRENT_IP is NOT in the firewall allow list\033[0m"; \
+		echo "\033[0;33m💡 Run 'make add-pg-firewall' to add it\033[0m"; \
+	fi
+
+add-pg-firewall: ## [util] Add your current IP to PostgreSQL firewall
+	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
+	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	az postgres flexible-server firewall-rule create \
+		--resource-group $$RG --name $$SERVER \
+		--rule-name "AllowMyIP" --start-ip-address $$CURRENT_IP --end-ip-address $$CURRENT_IP
+
 
 validate-postgres-admin: ## [util] Validate PostgreSQL admin user has required permissions
 	@echo "=========================================="
@@ -852,7 +782,7 @@ validate-postgres-admin: ## [util] Validate PostgreSQL admin user has required p
 
 
 
-setup-postgres-mirror: ## [core] ⑧ Setup PostgreSQL mirroring to Fabric (manual operations)
+setup-postgres-mirror: ## [core] Setup PostgreSQL mirroring to Fabric (manual operations)
 	@echo "=========================================="
 	@echo "Setting up Microsoft Fabric Mirroring for PostgreSQL"
 	@echo "=========================================="
@@ -1000,7 +930,7 @@ restart-postgres: ## [util] Restart PostgreSQL server (required after CDC parame
 	@echo "⏳ Wait 2-5 minutes before continuing mirroring setup"
 
 
-create-shortcuts: ## [core] ⑨ Create shortcuts to mirrored CosmosDB & Postgres
+create-shortcuts: ## [core] Create shortcuts to mirrored CosmosDB & Postgres
 	@echo ""
 	@echo "=========================================="
 	@echo "🔗 Creating Lakehouse Shortcuts"
@@ -1028,6 +958,26 @@ create-shortcuts: ## [core] ⑨ Create shortcuts to mirrored CosmosDB & Postgres
 	@echo ""
 
 
+update-fabric-sql-endpoint: ## [core] Update FABRIC_SQL_ENDPOINT on container apps (usage: make update-fabric-sql-endpoint FABRIC_SQL_ENDPOINT=<endpoint>)
+	@if [ -z "$(FABRIC_SQL_ENDPOINT)" ]; then \
+		echo "ERROR: FABRIC_SQL_ENDPOINT is required."; \
+		echo "Usage: make update-fabric-sql-endpoint FABRIC_SQL_ENDPOINT=<your-endpoint>.datawarehouse.fabric.microsoft.com"; \
+		exit 1; \
+	fi
+	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
+	if [ -z "$$SUBSCRIPTION_ID" ]; then \
+		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+		exit 1; \
+	fi; \
+	echo "Planning Terraform update with FABRIC_SQL_ENDPOINT=$(FABRIC_SQL_ENDPOINT)..."; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud plan \
+		$(TF_ENV_VARS) \
+		-var="fabric_sql_endpoint=$(FABRIC_SQL_ENDPOINT)" \
+		-out=tfplan && \
+	echo "Applying..."; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud apply tfplan
+	@echo "\033[0;32m✅ FABRIC_SQL_ENDPOINT updated on container apps!\033[0m"
+
 
 
 
@@ -1054,6 +1004,78 @@ update-fabric-sku: ## [util] Update Fabric Capacity SKU (usage: make update-fabr
 		exit 1; \
 	fi
 	./fabric-admin-scripts/manage-fabric-capacity.sh update $(SKU)
+
+# =============================================================================
+##@ Cloud Deployment
+# =============================================================================
+
+cloud-build: cloud-dashboard-build cloud-agents-build ## [core] Build all 4 images in ACR (no local Docker needed)
+	@echo "\033[0;32m✅ All images built in ACR!\033[0m"
+
+cloud-dashboard-build: ## [util] Build dashboard image in ACR
+	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
+	@if [ -z "$(ACR_NAME)" ]; then \
+		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Building dashboard in ACR..."
+	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/
+
+cloud-agents-build: ## [util] Build all 3 agent images in ACR
+	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
+	@if [ -z "$(ACR_NAME)" ]; then \
+		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Building agent images in ACR..."
+	az acr build --registry $(ACR_NAME) --image agent1-explainer:latest --platform linux/amd64 -f agents/agent1_explainer/Dockerfile .
+	az acr build --registry $(ACR_NAME) --image agent2-narrative:latest --platform linux/amd64 -f agents/agent2_narrative/Dockerfile .
+	az acr build --registry $(ACR_NAME) --image agent3-sentiment:latest --platform linux/amd64 -f agents/agent3_sentiment/Dockerfile .
+
+cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Container Apps
+	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
+	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
+	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
+	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
+	@if [ -z "$(ACR_SERVER)" ] || [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Updating Container App images (with ACR registry + health probes)..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	@echo "Enabling health probes and min_replicas..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent2.yaml
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent3.yaml
+	@echo "\033[0;32m✅ All Container Apps updated with health probes!\033[0m"
+
+cloud-logs: ## [util] Tail Container App logs for all services
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
+	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
+	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
+	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
+	@if [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Tailing logs for all Container Apps..."
+	@echo "Dashboard: $(DASHBOARD_APP)"
+	@echo "Agent 1:   $(AGENT1_APP)"
+	@echo "Agent 2:   $(AGENT2_APP)"
+	@echo "Agent 3:   $(AGENT3_APP)"
+	@echo ""
+	az containerapp logs show -n "$(DASHBOARD_APP)" -g "$(RG)" --follow &
+	az containerapp logs show -n "$(AGENT1_APP)" -g "$(RG)" --follow &
+	az containerapp logs show -n "$(AGENT2_APP)" -g "$(RG)" --follow &
+	az containerapp logs show -n "$(AGENT3_APP)" -g "$(RG)" --follow &
+	@wait
 
 
 ##@ Help

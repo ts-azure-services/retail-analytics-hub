@@ -24,6 +24,9 @@ dist/
 # Sweep directory
 sweeps/
 
+# Sync staging output
+sync/staging/
+
 # Local .terraform directories (providers, modules, caches)
 **/.terraform/*
 **/.terraform.lock.hcl~

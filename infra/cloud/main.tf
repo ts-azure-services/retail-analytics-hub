@@ -9,10 +9,10 @@ terraform {
     #   source  = "azure/azapi"
     #   version = "~> 2.0"
     # }
-    # fabric = {
-    #   source  = "microsoft/fabric"
-    #   version = "1.7.0"
-    # }
+    fabric = {
+      source  = "microsoft/fabric"
+      version = "1.7.0"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
@@ -34,8 +34,8 @@ provider "azurerm" {
   # Override with TF_VAR_subscription_id env var or -var flag
 }
 
-# provider "fabric" {
-# }
+provider "fabric" {
+}
 
 # Generate a random string for unique naming
 resource "random_string" "suffix" {
@@ -60,11 +60,37 @@ data "external" "azure_user" {
 }
 */
 
+# =============================================================================
+# ENVIRONMENT TOGGLE: dev (functional, no VNET) vs prod (full zero-trust)
+# Usage: terraform apply -var="environment=dev"   (default)
+#        terraform apply -var="environment=prod"
+# =============================================================================
+
+variable "environment" {
+  type        = string
+  default     = "dev"
+  description = "Environment stage: dev = functional (no VNET, public access), prod = full zero-trust (VNET, private endpoints)"
+
+  validation {
+    condition     = contains(["dev", "prod"], var.environment)
+    error_message = "environment must be 'dev' or 'prod'."
+  }
+}
+
+variable "fabric_admin_upn" {
+  type        = string
+  description = "UPN (email) of the Fabric Capacity administrator"
+}
+
 locals {
+  is_prod     = var.environment == "prod"
+  fabric_admin = var.fabric_admin_upn
+
   # Common tags applied to all resources
   common_tags = {
-    tf = "cloud"
-    SecurityControl  = "Ignore"
+    tf              = "cloud"
+    environment     = var.environment
+    SecurityControl = "Ignore"
   }
 }
 
@@ -77,12 +103,50 @@ resource "azurerm_resource_group" "example" {
 }
 
 # =============================================================================
+# MICROSOFT FABRIC CAPACITY AND WORKSPACE
+# =============================================================================
+
+# Create a Fabric Capacity
+resource "azurerm_fabric_capacity" "example" {
+  name                = "fcfabric${random_string.suffix.result}"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = "WestUS3"
+
+  administration_members = [local.fabric_admin]
+
+  sku {
+    name = "F8"
+    tier = "Fabric"
+  }
+
+  tags = local.common_tags
+}
+
+# Get the Fabric Capacity details
+data "fabric_capacity" "example" {
+  display_name = azurerm_fabric_capacity.example.name
+
+  lifecycle {
+    postcondition {
+      condition     = self.state == "Active"
+      error_message = "Fabric Capacity is not in Active state. Please check the Fabric Capacity status."
+    }
+  }
+}
+
+# Create a Fabric Workspace
+resource "fabric_workspace" "example" {
+  capacity_id  = data.fabric_capacity.example.id
+  display_name = "ws-fabric-${random_string.suffix.result}"
+}
+
+# =============================================================================
 # PHASE 1: ZERO-TRUST FOUNDATION - VNET, SUBNETS, NSGs
 # =============================================================================
 
-/*
 # Virtual Network
 resource "azurerm_virtual_network" "main" {
+  count               = local.is_prod ? 1 : 0
   name                = "vnet-fabric-${random_string.suffix.result}"
   address_space       = ["10.0.0.0/16"]
   location            = azurerm_resource_group.example.location
@@ -93,9 +157,10 @@ resource "azurerm_virtual_network" "main" {
 
 # Subnet for Container Apps Environment (delegated to Microsoft.App/environments)
 resource "azurerm_subnet" "containerapp" {
+  count                = local.is_prod ? 1 : 0
   name                 = "snet-containerapp"
   resource_group_name  = azurerm_resource_group.example.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  virtual_network_name = azurerm_virtual_network.main[0].name
   address_prefixes     = ["10.0.0.0/23"]
 
   # Service endpoints for Storage Account network ACLs
@@ -112,9 +177,10 @@ resource "azurerm_subnet" "containerapp" {
 
 # Subnet for PostgreSQL Flexible Server (delegated to Microsoft.DBforPostgreSQL/flexibleServers)
 resource "azurerm_subnet" "postgresql" {
+  count                = local.is_prod ? 1 : 0
   name                 = "snet-postgresql"
   resource_group_name  = azurerm_resource_group.example.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  virtual_network_name = azurerm_virtual_network.main[0].name
   address_prefixes     = ["10.0.2.0/24"]
 
   delegation {
@@ -130,226 +196,34 @@ resource "azurerm_subnet" "postgresql" {
 
 # Subnet for Private Endpoints (CosmosDB, Storage, Event Hub, ACR, AI Foundry)
 resource "azurerm_subnet" "privateendpoints" {
+  count                = local.is_prod ? 1 : 0
   name                 = "snet-privateendpoints"
   resource_group_name  = azurerm_resource_group.example.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  virtual_network_name = azurerm_virtual_network.main[0].name
   address_prefixes     = ["10.0.3.0/24"]
 }
 
 # Subnet for Key Vault Private Endpoint (isolated for security)
 resource "azurerm_subnet" "keyvault_pe" {
+  count                = local.is_prod ? 1 : 0
   name                 = "snet-keyvault-pe"
   resource_group_name  = azurerm_resource_group.example.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  virtual_network_name = azurerm_virtual_network.main[0].name
   address_prefixes     = ["10.0.4.0/28"]
 }
 
-# Subnet for future management resources (Bastion, VMs, etc.)
+# Subnet for future management resources
 resource "azurerm_subnet" "management" {
+  count                = local.is_prod ? 1 : 0
   name                 = "snet-management"
   resource_group_name  = azurerm_resource_group.example.name
-  virtual_network_name = azurerm_virtual_network.main.name
+  virtual_network_name = azurerm_virtual_network.main[0].name
   address_prefixes     = ["10.0.5.0/24"]
-}
-
-# =============================================================================
-# BASTION HOST FOR MANAGEMENT AND DATABASE ACCESS
-# =============================================================================
-
-# Public IP for Bastion Host
-resource "azurerm_public_ip" "bastion" {
-  name                = "pip-bastion-${random_string.suffix.result}"
-  location            = azurerm_resource_group.example.location
-  resource_group_name = azurerm_resource_group.example.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-
-  tags = local.common_tags
-}
-
-# Network Interface for Bastion Host
-resource "azurerm_network_interface" "bastion" {
-  name                = "nic-bastion-${random_string.suffix.result}"
-  location            = azurerm_resource_group.example.location
-  resource_group_name = azurerm_resource_group.example.name
-
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.management.id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.bastion.id
-  }
-
-  tags = local.common_tags
-}
-
-# Network Security Group for Bastion Host
-resource "azurerm_network_security_group" "bastion" {
-  name                = "nsg-bastion-${random_string.suffix.result}"
-  location            = azurerm_resource_group.example.location
-  resource_group_name = azurerm_resource_group.example.name
-
-  # Allow SSH from your public IP only
-  security_rule {
-    name                       = "AllowSSHFromClientIP"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = "${trimspace(data.http.my_ip.response_body)}/32"
-    destination_address_prefix = "*"
-  }
-
-  # Allow outbound to PostgreSQL subnet
-  security_rule {
-    name                       = "AllowPostgreSQLOutbound"
-    priority                   = 100
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "5432"
-    source_address_prefix      = "*"
-    destination_address_prefix = "10.0.2.0/24"
-  }
-
-  # Allow outbound to Private Endpoints subnet (CosmosDB, Storage, etc.)
-  security_rule {
-    name                       = "AllowPrivateEndpointsOutbound"
-    priority                   = 110
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "443"
-    source_address_prefix      = "*"
-    destination_address_prefix = "10.0.3.0/24"
-  }
-
-  # Allow outbound to Internet (for package updates, etc.)
-  security_rule {
-    name                       = "AllowInternetOutbound"
-    priority                   = 120
-    direction                  = "Outbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "Internet"
-  }
-
-  tags = local.common_tags
-}
-
-# Associate NSG with Bastion Network Interface
-resource "azurerm_network_interface_security_group_association" "bastion" {
-  network_interface_id      = azurerm_network_interface.bastion.id
-  network_security_group_id = azurerm_network_security_group.bastion.id
-}
-
-# Bastion Host Virtual Machine
-resource "azurerm_linux_virtual_machine" "bastion" {
-  name                = "vm-bastion-${random_string.suffix.result}"
-  location            = azurerm_resource_group.example.location
-  resource_group_name = azurerm_resource_group.example.name
-  size                = "Standard_B2s"
-  admin_username      = "azureuser"
-
-  # Enable System-Assigned Managed Identity for Azure resource access
-  identity {
-    type = "SystemAssigned"
-  }
-
-  network_interface_ids = [
-    azurerm_network_interface.bastion.id,
-  ]
-
-  admin_ssh_key {
-    username   = "azureuser"
-    public_key = file("~/.ssh/id_rsa.pub")
-  }
-
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
-    disk_size_gb         = 30
-  }
-
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts-gen2"
-    version   = "latest"
-  }
-
-  # Install development tools and uv
-  custom_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -e
-
-    # Update package list
-    apt-get update
-
-    # Install development and networking tools
-    apt-get install -y \
-      make \
-      tree \
-      jq \
-      curl \
-      wget \
-      git \
-      vim \
-      htop \
-      net-tools \
-      dnsutils \
-      iputils-ping \
-      traceroute \
-      unzip \
-      zip \
-      build-essential \
-      ca-certificates
-
-    # Install uv (Python package installer)
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    # Make uv available system-wide
-    ln -s /root/.local/bin/uv /usr/local/bin/uv
-
-    # Install Azure CLI for managing Azure resources
-    curl -sL https://aka.ms/InstallAzureCLIDeb | bash
-
-    echo "Bastion host setup complete" > /var/log/bastion-setup.log
-    EOF
-  )
-
-  tags = local.common_tags
-
-  depends_on = [
-    azurerm_network_interface_security_group_association.bastion
-  ]
-}
-
-# Grant Bastion Host managed identity access to CosmosDB
-resource "azurerm_cosmosdb_sql_role_assignment" "bastion" {
-  resource_group_name = azurerm_resource_group.example.name
-  account_name        = azurerm_cosmosdb_account.example.name
-  role_definition_id  = azurerm_cosmosdb_sql_role_definition.example.id
-  principal_id        = azurerm_linux_virtual_machine.bastion.identity[0].principal_id
-  scope               = azurerm_cosmosdb_account.example.id
-}
-
-# Grant Bastion Host managed identity Key Vault Secrets User role
-resource "azurerm_role_assignment" "bastion_kv_secrets_user" {
-  scope                = azurerm_key_vault.main.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = azurerm_linux_virtual_machine.bastion.identity[0].principal_id
 }
 
 # Network Security Group for Container App Subnet
 resource "azurerm_network_security_group" "containerapp" {
+  count               = local.is_prod ? 1 : 0
   name                = "nsg-containerapp-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
@@ -437,12 +311,14 @@ resource "azurerm_network_security_group" "containerapp" {
 
 # Associate NSG with Container App Subnet
 resource "azurerm_subnet_network_security_group_association" "containerapp" {
-  subnet_id                 = azurerm_subnet.containerapp.id
-  network_security_group_id = azurerm_network_security_group.containerapp.id
+  count                     = local.is_prod ? 1 : 0
+  subnet_id                 = azurerm_subnet.containerapp[0].id
+  network_security_group_id = azurerm_network_security_group.containerapp[0].id
 }
 
 # Network Security Group for PostgreSQL Subnet
 resource "azurerm_network_security_group" "postgresql" {
+  count               = local.is_prod ? 1 : 0
   name                = "nsg-postgresql-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
@@ -460,9 +336,9 @@ resource "azurerm_network_security_group" "postgresql" {
     destination_address_prefix = "*"
   }
 
-  # Allow PostgreSQL inbound from Bastion Host (management subnet)
+  # Allow PostgreSQL inbound from management subnet
   security_rule {
-    name                       = "AllowPostgreSQLFromBastion"
+    name                       = "AllowPostgreSQLFromManagement"
     priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
@@ -491,12 +367,14 @@ resource "azurerm_network_security_group" "postgresql" {
 
 # Associate NSG with PostgreSQL Subnet
 resource "azurerm_subnet_network_security_group_association" "postgresql" {
-  subnet_id                 = azurerm_subnet.postgresql.id
-  network_security_group_id = azurerm_network_security_group.postgresql.id
+  count                     = local.is_prod ? 1 : 0
+  subnet_id                 = azurerm_subnet.postgresql[0].id
+  network_security_group_id = azurerm_network_security_group.postgresql[0].id
 }
 
 # Network Security Group for Private Endpoints Subnet
 resource "azurerm_network_security_group" "privateendpoints" {
+  count               = local.is_prod ? 1 : 0
   name                = "nsg-privateendpoints-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
@@ -532,12 +410,14 @@ resource "azurerm_network_security_group" "privateendpoints" {
 
 # Associate NSG with Private Endpoints Subnet
 resource "azurerm_subnet_network_security_group_association" "privateendpoints" {
-  subnet_id                 = azurerm_subnet.privateendpoints.id
-  network_security_group_id = azurerm_network_security_group.privateendpoints.id
+  count                     = local.is_prod ? 1 : 0
+  subnet_id                 = azurerm_subnet.privateendpoints[0].id
+  network_security_group_id = azurerm_network_security_group.privateendpoints[0].id
 }
 
 # Network Security Group for Key Vault Subnet
 resource "azurerm_network_security_group" "keyvault" {
+  count               = local.is_prod ? 1 : 0
   name                = "nsg-keyvault-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
@@ -586,8 +466,9 @@ resource "azurerm_network_security_group" "keyvault" {
 
 # Associate NSG with Key Vault Subnet
 resource "azurerm_subnet_network_security_group_association" "keyvault" {
-  subnet_id                 = azurerm_subnet.keyvault_pe.id
-  network_security_group_id = azurerm_network_security_group.keyvault.id
+  count                     = local.is_prod ? 1 : 0
+  subnet_id                 = azurerm_subnet.keyvault_pe[0].id
+  network_security_group_id = azurerm_network_security_group.keyvault[0].id
 }
 
 # =============================================================================
@@ -596,6 +477,7 @@ resource "azurerm_subnet_network_security_group_association" "keyvault" {
 
 # DNS Private Zone for CosmosDB
 resource "azurerm_private_dns_zone" "cosmosdb" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.documents.azure.com"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -604,10 +486,11 @@ resource "azurerm_private_dns_zone" "cosmosdb" {
 
 # Link CosmosDB DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "cosmosdb" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "cosmosdb-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.cosmosdb.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.cosmosdb[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
@@ -615,6 +498,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "cosmosdb" {
 
 # DNS Private Zone for Storage Account (File)
 resource "azurerm_private_dns_zone" "storage_file" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.file.core.windows.net"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -623,10 +507,11 @@ resource "azurerm_private_dns_zone" "storage_file" {
 
 # Link Storage File DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "storage_file" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "storage-file-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.storage_file.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.storage_file[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
@@ -634,6 +519,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "storage_file" {
 
 # DNS Private Zone for Event Hub
 resource "azurerm_private_dns_zone" "eventhub" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.servicebus.windows.net"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -642,10 +528,11 @@ resource "azurerm_private_dns_zone" "eventhub" {
 
 # Link Event Hub DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "eventhub" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "eventhub-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.eventhub.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.eventhub[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
@@ -653,6 +540,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "eventhub" {
 
 # DNS Private Zone for Container Registry
 resource "azurerm_private_dns_zone" "acr" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.azurecr.io"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -661,10 +549,11 @@ resource "azurerm_private_dns_zone" "acr" {
 
 # Link ACR DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "acr" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "acr-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.acr.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.acr[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
@@ -672,6 +561,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "acr" {
 
 # DNS Private Zone for Key Vault
 resource "azurerm_private_dns_zone" "keyvault" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.vaultcore.azure.net"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -680,10 +570,11 @@ resource "azurerm_private_dns_zone" "keyvault" {
 
 # Link Key Vault DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "keyvault" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "keyvault-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.keyvault.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.keyvault[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
@@ -691,6 +582,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "keyvault" {
 
 # DNS Private Zone for AI Foundry (Cognitive Services)
 resource "azurerm_private_dns_zone" "cognitive" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.cognitiveservices.azure.com"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -699,10 +591,11 @@ resource "azurerm_private_dns_zone" "cognitive" {
 
 # Link Cognitive Services DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "cognitive" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "cognitive-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.cognitive.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.cognitive[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
@@ -710,6 +603,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "cognitive" {
 
 # DNS Private Zone for PostgreSQL
 resource "azurerm_private_dns_zone" "postgres" {
+  count               = local.is_prod ? 1 : 0
   name                = "privatelink.postgres.database.azure.com"
   resource_group_name = azurerm_resource_group.example.name
 
@@ -718,15 +612,15 @@ resource "azurerm_private_dns_zone" "postgres" {
 
 # Link PostgreSQL DNS Zone to VNET
 resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
+  count                 = local.is_prod ? 1 : 0
   name                  = "postgres-vnet-link"
   resource_group_name   = azurerm_resource_group.example.name
-  private_dns_zone_name = azurerm_private_dns_zone.postgres.name
-  virtual_network_id    = azurerm_virtual_network.main.id
+  private_dns_zone_name = azurerm_private_dns_zone.postgres[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
   registration_enabled  = false
 
   tags = local.common_tags
 }
-*/
 
 # =============================================================================
 # PHASE 1: KEY VAULT AND SECRETS MANAGEMENT
@@ -744,13 +638,12 @@ resource "random_password" "postgresql_admin" {
 }
 
 # Key Vault for centralized secrets management
-/*
 resource "azurerm_key_vault" "main" {
-  name                       = "kv-fabric-${random_string.suffix.result}"
-  location                   = azurerm_resource_group.example.location
-  resource_group_name        = azurerm_resource_group.example.name
-  tenant_id                  = data.azurerm_client_config.current.tenant_id
-  sku_name                   = "standard"
+  name                = "kv-fabric-${random_string.suffix.result}"
+  location            = azurerm_resource_group.example.location
+  resource_group_name = azurerm_resource_group.example.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = "standard"
 
   # Enable RBAC authorization (required for managed identities)
   rbac_authorization_enabled = true
@@ -761,7 +654,7 @@ resource "azurerm_key_vault" "main" {
   # Soft delete with 7 days retention
   soft_delete_retention_days = 7
 
-  # Public network access enabled initially (will be disabled after private endpoint in Phase 4)
+  # Public network access enabled initially (will be disabled after private endpoint)
   public_network_access_enabled = true
 
   # Network ACLs - allow all initially (will be restricted after private endpoint)
@@ -825,151 +718,9 @@ resource "azurerm_key_vault_secret" "eventhub_primary_key" {
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
-# Store AI Foundry endpoint in Key Vault
-resource "azurerm_key_vault_secret" "ai_foundry_endpoint" {
-  name         = "ai-foundry-endpoint"
-  value        = "https://${azapi_resource.ai_foundry.body.properties.customSubDomainName}.services.ai.azure.com/api/projects/${azapi_resource.ai_foundry_project.name}"
-  key_vault_id = azurerm_key_vault.main.id
-
-  depends_on = [azurerm_role_assignment.current_user_kv_admin]
-}
-
 # =============================================================================
-# AZURE AI FOUNDRY PROJECT - GPT-5 Deployment (using azapi)
+# EVENT HUB
 # =============================================================================
-
-# Create AI Foundry Hub resource using azapi
-resource "azapi_resource" "ai_foundry" {
-  type                      = "Microsoft.CognitiveServices/accounts@2025-06-01"
-  name                      = "aifoundry-fabric-${random_string.suffix.result}"
-  parent_id                 = azurerm_resource_group.example.id
-  location                  = "WestUS3"
-  schema_validation_enabled = false
-
-  body = {
-    kind = "AIServices"
-    sku = {
-      name = "S0"
-    }
-    identity = {
-      type = "SystemAssigned"
-    }
-
-    properties = {
-      # =============================================================================
-      # PHASE 5: DISABLE LOCAL AUTH - Use managed identity only
-      # =============================================================================
-      disableLocalAuth = true  # Changed from false
-
-      # Specifies that this is an AI Foundry resource
-      allowProjectManagement = true
-
-      # Set custom subdomain name for DNS names
-      customSubDomainName = "aifoundry-fabric-${random_string.suffix.result}"
-
-      # Keep public network access enabled for Azure AI Studio portal
-      publicNetworkAccess = "Enabled"
-    }
-  }
-
-  tags = local.common_tags
-}
-
-# Create GPT-4o Deployment in the AI Foundry resource
-resource "azapi_resource" "aifoundry_deployment_gpt4o" {
-  type      = "Microsoft.CognitiveServices/accounts/deployments@2023-05-01"
-  name      = "gpt-4o"
-  parent_id = azapi_resource.ai_foundry.id
-  depends_on = [
-    azapi_resource.ai_foundry
-  ]
-
-  body = {
-    sku = {
-      name     = "GlobalStandard"
-      capacity = 50
-    }
-    properties = {
-      model = {
-        format  = "OpenAI"
-        name    = "gpt-4o"
-        version = "2024-11-20"
-      }
-    }
-  }
-}
-
-# Create AI Foundry Project
-resource "azapi_resource" "ai_foundry_project" {
-  type                      = "Microsoft.CognitiveServices/accounts/projects@2025-06-01"
-  name                      = "project-fabric-${random_string.suffix.result}"
-  parent_id                 = azapi_resource.ai_foundry.id
-  location                  = "WestUS3"
-  schema_validation_enabled = false
-
-  body = {
-    sku = {
-      name = "S0"
-    }
-    identity = {
-      type = "SystemAssigned"
-    }
-
-    properties = {
-      displayName = "Fabric Project"
-      description = "AI Foundry project for fabric capstone"
-    }
-  }
-
-  tags = local.common_tags
-}
-
-# Assign Azure AI User role to current user for AI Foundry Hub
-resource "azurerm_role_assignment" "ai_foundry_user" {
-  scope                = azapi_resource.ai_foundry.id
-  role_definition_name = "Azure AI User"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-
-# Assign Azure AI User role to current user for AI Foundry Project
-resource "azurerm_role_assignment" "ai_foundry_project_user" {
-  scope                = azapi_resource.ai_foundry_project.id
-  role_definition_name = "Azure AI User"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-
-# Create a Fabric Capacity.
-resource "azurerm_fabric_capacity" "example" {
-  name                = "fcfabric${random_string.suffix.result}"
-  resource_group_name = azurerm_resource_group.example.name
-  location            = "WestUS3"
-
-  administration_members = [local.fabric_admin]
-
-  sku {
-    name = "F8"
-    tier = "Fabric"
-  }
-}
-
-# Get the Fabric Capacity details.
-data "fabric_capacity" "example" {
-  display_name = azurerm_fabric_capacity.example.name
-
-  lifecycle {
-    postcondition {
-      condition     = self.state == "Active"
-      error_message = "Fabric Capacity is not in Active state. Please check the Fabric Capacity status."
-    }
-  }
-}
-
-# Create a Fabric Workspace.
-# https://registry.terraform.io/providers/microsoft/fabric/latest/docs/resources/workspace
-resource "fabric_workspace" "example" {
-  capacity_id  = data.fabric_capacity.example.id
-  display_name = "ws-fabric-${random_string.suffix.result}"
-}
 
 # Create Event Hub Namespace
 resource "azurerm_eventhub_namespace" "example" {
@@ -978,7 +729,7 @@ resource "azurerm_eventhub_namespace" "example" {
   resource_group_name = azurerm_resource_group.example.name
   sku                 = "Standard"
   capacity            = 1
-  
+
   # Enable SAS authentication for Fabric Eventstream
   local_authentication_enabled = true
 
@@ -987,10 +738,10 @@ resource "azurerm_eventhub_namespace" "example" {
 
 # Create Event Hub
 resource "azurerm_eventhub" "example" {
-  name                = "fabric${random_string.suffix.result}eventhub"
-  namespace_id        = azurerm_eventhub_namespace.example.id
-  partition_count     = 4
-  message_retention   = 3
+  name              = "fabric${random_string.suffix.result}eventhub"
+  namespace_id      = azurerm_eventhub_namespace.example.id
+  partition_count   = 4
+  message_retention = 3
 }
 
 # Create Event Hub Authorization Rule (SAS Policy with Send and Listen rights for simulation)
@@ -1011,27 +762,80 @@ resource "azurerm_role_assignment" "eventhub_sender" {
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
-# # Create Storage Account (commented out - not needed for current simulation workflow)
-# resource "azurerm_storage_account" "example" {
-#   name                     = "fabric${random_string.suffix.result}sa"
-#   resource_group_name      = azurerm_resource_group.example.name
-#   location                 = azurerm_resource_group.example.location
-#   account_tier             = "Standard"
-#   account_replication_type = "LRS"
-#   account_kind             = "StorageV2"
-#
-#   tags = local.common_tags
-# }
+# =============================================================================
+# AZURE OPENAI (Cognitive Services)
+# =============================================================================
 
-# # Create Blob Container (commented out - not needed for current simulation workflow)
-# resource "azurerm_storage_container" "example" {
-#   name                  = "fabric${random_string.suffix.result}blobcontainer"
-#   storage_account_id    = azurerm_storage_account.example.id
-#   container_access_type = "private"
-# }
-*/
+# Create Azure OpenAI Account
+resource "azurerm_cognitive_account" "openai" {
+  name                  = "openai-fabric-${random_string.suffix.result}"
+  location              = azurerm_resource_group.example.location
+  resource_group_name   = azurerm_resource_group.example.name
+  kind                  = "OpenAI"
+  sku_name              = "S0"
+  custom_subdomain_name = "openai-fabric-${random_string.suffix.result}"
 
-# Create CosmosDB Account (public-only mode for now)
+  tags = local.common_tags
+}
+
+# Create GPT-4o Deployment
+resource "azurerm_cognitive_deployment" "gpt4o" {
+  name                 = "gpt-4o"
+  cognitive_account_id = azurerm_cognitive_account.openai.id
+
+  model {
+    format  = "OpenAI"
+    name    = "gpt-4o"
+    version = "2024-11-20"
+  }
+
+  sku {
+    name     = "GlobalStandard"
+    capacity = 50
+  }
+}
+
+# Assign Cognitive Services OpenAI User role to current user
+resource "azurerm_role_assignment" "openai_user" {
+  scope                = azurerm_cognitive_account.openai.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# =============================================================================
+# STAGING STORAGE ACCOUNT (Sync Pipeline)
+# =============================================================================
+
+resource "azurerm_storage_account" "staging" {
+  name                     = "staging${random_string.suffix.result}"
+  resource_group_name      = azurerm_resource_group.example.name
+  location                 = azurerm_resource_group.example.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  # Public access for SAS-based uploads from local machine
+  public_network_access_enabled = true
+  tags                          = local.common_tags
+}
+
+resource "azurerm_storage_container" "postgres" {
+  name                  = "postgres"
+  storage_account_id    = azurerm_storage_account.staging.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "cosmos" {
+  name                  = "cosmos"
+  storage_account_id    = azurerm_storage_account.staging.id
+  container_access_type = "private"
+}
+
+resource "azurerm_storage_container" "eventhub" {
+  name                  = "eventhub"
+  storage_account_id    = azurerm_storage_account.staging.id
+  container_access_type = "private"
+}
+
+# Create CosmosDB Account
 resource "azurerm_cosmosdb_account" "example" {
   name                = "fabric${random_string.suffix.result}cosmos"
   location            = azurerm_resource_group.example.location
@@ -1039,8 +843,8 @@ resource "azurerm_cosmosdb_account" "example" {
   offer_type          = "Standard"
   kind                = "GlobalDocumentDB"
 
-  # Public-only mode for now
-  public_network_access_enabled = true
+  # dev: public access for functional testing; prod: private endpoints only
+  public_network_access_enabled = local.is_prod ? false : true
 
   consistency_policy {
     consistency_level = "Session"
@@ -1053,8 +857,8 @@ resource "azurerm_cosmosdb_account" "example" {
 
   # Enable continuous backup (Point-in-Time Restore)
   backup {
-    type                = "Continuous"
-    tier                = "Continuous7Days"  # Options: Continuous7Days or Continuous30Days
+    type = "Continuous"
+    tier = "Continuous7Days" # Options: Continuous7Days or Continuous30Days
   }
 
   tags = local.common_tags
@@ -1097,10 +901,10 @@ resource "azurerm_cosmosdb_sql_role_assignment" "example" {
 }
 
 # =============================================================================
-# PHASE 2: POSTGRESQL (PUBLIC-ONLY MODE)
+# PHASE 2: POSTGRESQL (PRIVATE MODE)
 # =============================================================================
 
-# Create PostgreSQL Flexible Server (public-only mode)
+# Create PostgreSQL Flexible Server
 resource "azurerm_postgresql_flexible_server" "example" {
   name                = "fabric${random_string.suffix.result}psql"
   location            = azurerm_resource_group.example.location
@@ -1115,12 +919,19 @@ resource "azurerm_postgresql_flexible_server" "example" {
 
   backup_retention_days = 7
 
-  # Public-only mode for now
-  public_network_access_enabled = true
+  # dev: public access for functional testing; prod: private via VNET
+  public_network_access_enabled = local.is_prod ? false : true
 
   # Enable System-Assigned Managed Identity (required for Fabric mirroring)
   identity {
     type = "SystemAssigned"
+  }
+
+  # Enable Azure AD authentication (required for managed identity admin)
+  authentication {
+    active_directory_auth_enabled = true
+    password_auth_enabled         = true
+    tenant_id                     = data.azurerm_client_config.current.tenant_id
   }
 
   lifecycle {
@@ -1128,8 +939,14 @@ resource "azurerm_postgresql_flexible_server" "example" {
   }
 
   tags = local.common_tags
+}
 
-  # No VNET/private DNS dependencies in public-only mode
+# Allow Azure services to access PostgreSQL (required for Fabric mirroring)
+resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure_services" {
+  name             = "AllowAllAzureServicesAndResourcesWithinAzureIps"
+  server_id        = azurerm_postgresql_flexible_server.example.id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "0.0.0.0"
 }
 
 # # PostgreSQL Server Configuration: Set wal_level to logical (required for CDC/mirroring)
@@ -1171,29 +988,6 @@ resource "azurerm_postgresql_flexible_server_database" "example" {
   charset   = "utf8"
 }
 
-# =============================================================================
-# PHASE 2: FIREWALL RULES REMOVED (replaced by VNET integration)
-# =============================================================================
-# PostgreSQL now uses VNET integration with delegated subnet
-# No firewall rules needed - access is controlled by NSGs and VNET routing
-
-# # Create PostgreSQL Flexible Server Firewall Rule to allow client machine IP only
-# resource "azurerm_postgresql_flexible_server_firewall_rule" "client_ip" {
-#   name             = "AllowClientIP"
-#   server_id        = azurerm_postgresql_flexible_server.example.id
-#   start_ip_address = trimspace(data.http.my_ip.response_body)
-#   end_ip_address   = trimspace(data.http.my_ip.response_body)
-# }
-
-# # Allow Azure services to access this PostgreSQL server
-# resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure_services" {
-#   name             = "AllowAllAzureServicesAndResourcesWithinAzureIps"
-#   server_id        = azurerm_postgresql_flexible_server.example.id
-#   start_ip_address = "0.0.0.0"
-#   end_ip_address   = "0.0.0.0"
-# }
-
-
 
 # ============================================================================
 # Azure Container Apps Configuration
@@ -1203,13 +997,13 @@ resource "azurerm_postgresql_flexible_server_database" "example" {
 # PHASE 4: PRIVATE ENDPOINTS FOR ALL SERVICES
 # =============================================================================
 
-/*
 # Private Endpoint for Key Vault
 resource "azurerm_private_endpoint" "keyvault" {
+  count               = local.is_prod ? 1 : 0
   name                = "pe-keyvault-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
-  subnet_id           = azurerm_subnet.keyvault_pe.id
+  subnet_id           = azurerm_subnet.keyvault_pe[0].id
 
   private_service_connection {
     name                           = "psc-keyvault"
@@ -1220,7 +1014,7 @@ resource "azurerm_private_endpoint" "keyvault" {
 
   private_dns_zone_group {
     name                 = "keyvault-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.keyvault.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.keyvault[0].id]
   }
 
   tags = local.common_tags
@@ -1228,10 +1022,11 @@ resource "azurerm_private_endpoint" "keyvault" {
 
 # Private Endpoint for CosmosDB
 resource "azurerm_private_endpoint" "cosmosdb" {
+  count               = local.is_prod ? 1 : 0
   name                = "pe-cosmosdb-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
-  subnet_id           = azurerm_subnet.privateendpoints.id
+  subnet_id           = azurerm_subnet.privateendpoints[0].id
 
   private_service_connection {
     name                           = "psc-cosmosdb"
@@ -1242,7 +1037,7 @@ resource "azurerm_private_endpoint" "cosmosdb" {
 
   private_dns_zone_group {
     name                 = "cosmosdb-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.cosmosdb.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.cosmosdb[0].id]
   }
 
   tags = local.common_tags
@@ -1250,10 +1045,11 @@ resource "azurerm_private_endpoint" "cosmosdb" {
 
 # Private Endpoint for Event Hub
 resource "azurerm_private_endpoint" "eventhub" {
+  count               = local.is_prod ? 1 : 0
   name                = "pe-eventhub-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
-  subnet_id           = azurerm_subnet.privateendpoints.id
+  subnet_id           = azurerm_subnet.privateendpoints[0].id
 
   private_service_connection {
     name                           = "psc-eventhub"
@@ -1264,29 +1060,30 @@ resource "azurerm_private_endpoint" "eventhub" {
 
   private_dns_zone_group {
     name                 = "eventhub-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.eventhub.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.eventhub[0].id]
   }
 
   tags = local.common_tags
 }
 
-# Private Endpoint for AI Foundry (Cognitive Services)
+# Private Endpoint for Azure OpenAI (Cognitive Services)
 resource "azurerm_private_endpoint" "cognitive" {
+  count               = local.is_prod ? 1 : 0
   name                = "pe-cognitive-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
-  subnet_id           = azurerm_subnet.privateendpoints.id
+  subnet_id           = azurerm_subnet.privateendpoints[0].id
 
   private_service_connection {
     name                           = "psc-cognitive"
-    private_connection_resource_id = azapi_resource.ai_foundry.id
+    private_connection_resource_id = azurerm_cognitive_account.openai.id
     is_manual_connection           = false
     subresource_names              = ["account"]
   }
 
   private_dns_zone_group {
     name                 = "cognitive-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.cognitive.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.cognitive[0].id]
   }
 
   tags = local.common_tags
@@ -1294,10 +1091,11 @@ resource "azurerm_private_endpoint" "cognitive" {
 
 # Private Endpoint for Container Registry
 resource "azurerm_private_endpoint" "acr" {
+  count               = local.is_prod ? 1 : 0
   name                = "pe-acr-${random_string.suffix.result}"
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
-  subnet_id           = azurerm_subnet.privateendpoints.id
+  subnet_id           = azurerm_subnet.privateendpoints[0].id
 
   private_service_connection {
     name                           = "psc-acr"
@@ -1308,35 +1106,13 @@ resource "azurerm_private_endpoint" "acr" {
 
   private_dns_zone_group {
     name                 = "acr-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.acr.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.acr[0].id]
   }
 
   tags = local.common_tags
 
-  # Create Key Vault private endpoint before disabling public access
   depends_on = [azurerm_key_vault.main]
 }
-
-# =============================================================================
-# PHASE 4: UPDATE KEY VAULT - Disable Public Access After Private Endpoint
-# =============================================================================
-
-# Note: We need to update Key Vault configuration after private endpoint is created
-# This is a chicken-and-egg problem: we need to create secrets first, then create PE, then disable public access
-# For now, Key Vault remains with public access enabled during initial deployment
-# After successful deployment, manually disable public access or add a separate apply step
-
-# Uncomment this resource after first successful apply to disable public access:
-# resource "null_resource" "disable_keyvault_public_access" {
-#   provisioner "local-exec" {
-#     command = "az keyvault update --name ${azurerm_key_vault.main.name} --public-network-access Disabled"
-#   }
-#   depends_on = [azurerm_private_endpoint.keyvault]
-# }
-
-# =============================================================================
-# PHASE 4: UPDATE SERVICES WITH PRIVATE ENDPOINTS
-# =============================================================================
 
 # =============================================================================
 # PHASE 5: MANAGED IDENTITY AUTHENTICATION
@@ -1347,14 +1123,17 @@ resource "azurerm_container_registry" "acr" {
   name                = "acr${random_string.suffix.result}"
   resource_group_name = azurerm_resource_group.example.name
   location            = azurerm_resource_group.example.location
-  sku                 = "Premium"  # Upgraded from Basic for private endpoint support
-  admin_enabled       = false      # Disabled - using managed identity instead
+  sku                 = local.is_prod ? "Premium" : "Basic" # Premium required for private endpoints
+  admin_enabled       = false                                # Disabled - using managed identity instead
 
-  # Disable public network access (Phase 4)
-  public_network_access_enabled = false
+  # dev: public access; prod: private endpoints only
+  public_network_access_enabled = local.is_prod ? false : true
 
-  network_rule_set {
-    default_action = "Deny"
+  dynamic "network_rule_set" {
+    for_each = local.is_prod ? [1] : []
+    content {
+      default_action = "Deny"
+    }
   }
 
   tags = local.common_tags
@@ -1371,11 +1150,133 @@ resource "azurerm_container_app_environment" "env" {
   location                   = azurerm_resource_group.example.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.example.id
 
-  # VNET Integration - use delegated subnet for Container Apps
-  infrastructure_subnet_id       = azurerm_subnet.containerapp.id
-  internal_load_balancer_enabled = false  # Keep external ingress enabled
+  # dev: no VNET (fast deploy/destroy); prod: VNET integration
+  infrastructure_subnet_id       = local.is_prod ? azurerm_subnet.containerapp[0].id : null
+  internal_load_balancer_enabled = local.is_prod ? false : null
 
   tags = local.common_tags
+}
+
+# =============================================================================
+# CONTAINER APP JOB — IMPORTER (Manual trigger, runs inside VNET)
+# =============================================================================
+
+resource "azurerm_container_app_job" "importer" {
+  name                         = "caj-importer-${random_string.suffix.result}"
+  resource_group_name          = azurerm_resource_group.example.name
+  location                     = azurerm_resource_group.example.location
+  container_app_environment_id = azurerm_container_app_environment.env.id
+
+  replica_timeout_in_seconds = 600
+  replica_retry_limit        = 1
+
+  # Manual trigger mode — started via `az containerapp job start`
+  manual_trigger_config {
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  # Pull from ACR using managed identity
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "System"
+  }
+
+  template {
+    container {
+      name   = "importer"
+      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder — update via `make sync-deploy`
+      cpu    = 1.0
+      memory = "2Gi"
+
+      env {
+        name  = "POSTGRES_FQDN"
+        value = azurerm_postgresql_flexible_server.example.fqdn
+      }
+      env {
+        name  = "POSTGRES_DB_NAME"
+        value = azurerm_postgresql_flexible_server_database.example.name
+      }
+      env {
+        name  = "POSTGRES_USER"
+        value = azurerm_postgresql_flexible_server.example.administrator_login
+      }
+      env {
+        name  = "POSTGRES_PASSWORD"
+        value = random_password.postgresql_admin.result
+      }
+      env {
+        name  = "COSMOSDB_ENDPOINT"
+        value = azurerm_cosmosdb_account.example.endpoint
+      }
+      env {
+        name  = "COSMOSDB_DB_NAME"
+        value = azurerm_cosmosdb_sql_database.example.name
+      }
+      env {
+        name  = "EVENTHUB_NAMESPACE"
+        value = "${azurerm_eventhub_namespace.example.name}.servicebus.windows.net"
+      }
+      env {
+        name  = "EVENTHUB_NAME"
+        value = azurerm_eventhub.example.name
+      }
+      env {
+        name  = "STORAGE_ACCOUNT_NAME"
+        value = azurerm_storage_account.staging.name
+      }
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# =============================================================================
+# RBAC FOR IMPORTER MANAGED IDENTITY
+# =============================================================================
+
+# Pull images from ACR
+resource "azurerm_role_assignment" "importer_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_container_app_job.importer.identity[0].principal_id
+}
+
+# Read staging blobs
+resource "azurerm_role_assignment" "importer_blob_reader" {
+  scope                = azurerm_storage_account.staging.id
+  role_definition_name = "Storage Blob Data Reader"
+  principal_id         = azurerm_container_app_job.importer.identity[0].principal_id
+}
+
+# Write to Cosmos DB
+resource "azurerm_cosmosdb_sql_role_assignment" "importer" {
+  resource_group_name = azurerm_resource_group.example.name
+  account_name        = azurerm_cosmosdb_account.example.name
+  role_definition_id  = azurerm_cosmosdb_sql_role_definition.example.id
+  principal_id        = azurerm_container_app_job.importer.identity[0].principal_id
+  scope               = azurerm_cosmosdb_account.example.id
+}
+
+# Send to Event Hub
+resource "azurerm_role_assignment" "importer_eventhub_sender" {
+  scope                = azurerm_eventhub.example.id
+  role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = azurerm_container_app_job.importer.identity[0].principal_id
+}
+
+# AAD admin on Postgres for managed identity auth
+resource "azurerm_postgresql_flexible_server_active_directory_administrator" "importer" {
+  server_name         = azurerm_postgresql_flexible_server.example.name
+  resource_group_name = azurerm_resource_group.example.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  object_id           = azurerm_container_app_job.importer.identity[0].principal_id
+  principal_name      = "caj-importer-${random_string.suffix.result}"
+  principal_type      = "ServicePrincipal"
 }
 
 # =============================================================================
@@ -1521,12 +1422,11 @@ resource "azurerm_monitor_diagnostic_setting" "acr" {
   }
 }
 
-*/
-
-
+# =============================================================================
+# OUTPUTS
+# =============================================================================
 
 # Details of the Fabric Capacity
-/*
 output "fabric_capacity" {
   value       = data.fabric_capacity.example
   description = "The Fabric Capacity object"
@@ -1582,26 +1482,19 @@ output "event_hub_connection_string" {
   description = "The connection string for the Event Hub authorization rule with Send/Listen permissions"
   sensitive   = true
 }
-*/
 
-# # Storage Account Name (commented out - not needed for current simulation workflow)
-# output "storage_account" {
-#   value       = azurerm_storage_account.example.name
-#   description = "The name of the storage account"
-# }
+# Staging Storage Account Name
+output "staging_storage_account_name" {
+  value       = azurerm_storage_account.staging.name
+  description = "The name of the staging storage account"
+}
 
-# # Storage Account Connection String (commented out - not needed for current simulation workflow)
-# output "storage_conn_string" {
-#   value       = azurerm_storage_account.example.primary_connection_string
-#   description = "The primary connection string for the storage account"
-#   sensitive   = true
-# }
-
-# # Blob Container Name (commented out - not needed for current simulation workflow)
-# output "blob_container_name" {
-#   value       = azurerm_storage_container.example.name
-#   description = "The name of the blob container"
-# }
+# Staging Storage Account Connection String
+output "staging_storage_conn_string" {
+  value       = azurerm_storage_account.staging.primary_connection_string
+  description = "The primary connection string for the staging storage account"
+  sensitive   = true
+}
 
 # CosmosDB Account Name
 output "cosmosdb_account_name" {
@@ -1667,7 +1560,6 @@ output "postgresql_database_name" {
 }
 
 # Log Analytics Workspace Name
-/*
 output "log_analytics_workspace_name" {
   value       = azurerm_log_analytics_workspace.example.name
   description = "The name of the Log Analytics workspace"
@@ -1677,66 +1569,6 @@ output "log_analytics_workspace_name" {
 output "log_analytics_workspace_id" {
   value       = azurerm_log_analytics_workspace.example.workspace_id
   description = "The workspace ID of the Log Analytics workspace"
-}
-
-# AI Foundry Hub ID
-output "ai_foundry_hub_id" {
-  value       = azapi_resource.ai_foundry.id
-  description = "The ID of the AI Foundry hub"
-}
-
-# AI Foundry Hub Name
-output "ai_foundry_hub_name" {
-  value       = azapi_resource.ai_foundry.name
-  description = "The name of the AI Foundry hub"
-}
-
-# AI Foundry Hub Endpoint
-output "ai_foundry_hub_endpoint" {
-  value       = azapi_resource.ai_foundry.output.properties.endpoint
-  description = "The endpoint for the AI Foundry hub"
-}
-
-# GPT-4o Deployment ID
-output "gpt4o_deployment_id" {
-  value       = azapi_resource.aifoundry_deployment_gpt4o.id
-  description = "The ID of the GPT-4o deployment"
-}
-
-# GPT-4o Deployment Name
-output "gpt4o_deployment_name" {
-  value       = azapi_resource.aifoundry_deployment_gpt4o.name
-  description = "The name of the GPT-4o deployment"
-}
-
-# AI Foundry Project ID
-output "ai_foundry_project_id" {
-  value       = azapi_resource.ai_foundry_project.id
-  description = "The ID of the AI Foundry project"
-}
-
-# AI Foundry Project Name
-output "ai_foundry_project_name" {
-  value       = azapi_resource.ai_foundry_project.name
-  description = "The name of the AI Foundry project"
-}
-
-# AI Foundry Project Endpoint (for agent scripts)
-output "azure_ai_project_endpoint" {
-  value       = "https://${azapi_resource.ai_foundry.body.properties.customSubDomainName}.services.ai.azure.com/api/projects/${azapi_resource.ai_foundry_project.name}"
-  description = "The endpoint for the AI Foundry project (used by agent scripts)"
-}
-
-# AI Foundry Project ID (for agent scripts)
-output "azure_ai_project_id" {
-  value       = "${azapi_resource.ai_foundry.id}/projects/${azapi_resource.ai_foundry_project.name}"
-  description = "The full resource ID of the AI Foundry project (used by agent scripts)"
-}
-
-# AI Model Deployment Name (for agent scripts)
-output "azure_ai_model_deployment_name" {
-  value       = azapi_resource.aifoundry_deployment_gpt4o.name
-  description = "The name of the GPT-4o deployment (used by agent scripts)"
 }
 
 # Container Registry Name
@@ -1766,37 +1598,40 @@ output "key_vault_id" {
   value       = azurerm_key_vault.main.id
   description = "The ID of the Key Vault"
 }
-*/
 
 # =============================================================================
-# BASTION HOST OUTPUTS
+# AZURE OPENAI OUTPUTS
 # =============================================================================
 
-# Bastion Host Public IP
-/*
-output "bastion_public_ip" {
-  value       = azurerm_public_ip.bastion.ip_address
-  description = "The public IP address of the bastion host"
+# Azure OpenAI Account Name
+output "openai_account_name" {
+  value       = azurerm_cognitive_account.openai.name
+  description = "The name of the Azure OpenAI account"
 }
 
-# Bastion Host Private IP
-output "bastion_private_ip" {
-  value       = azurerm_network_interface.bastion.private_ip_address
-  description = "The private IP address of the bastion host"
+# Azure OpenAI Endpoint
+output "openai_endpoint" {
+  value       = azurerm_cognitive_account.openai.endpoint
+  description = "The endpoint for the Azure OpenAI account"
 }
 
-# Bastion Host Connection String
-output "bastion_ssh_command" {
-  value       = "ssh azureuser@${azurerm_public_ip.bastion.ip_address}"
-  description = "SSH command to connect to the bastion host"
+# GPT-4o Deployment Name
+output "openai_deployment_name" {
+  value       = azurerm_cognitive_deployment.gpt4o.name
+  description = "The name of the GPT-4o deployment"
 }
-*/
+
+# Container App Job (Importer) Name
+output "importer_job_name" {
+  value       = azurerm_container_app_job.importer.name
+  description = "The name of the importer Container App Job"
+}
 
 # Generate .env file for local development
 resource "local_file" "env_file" {
   filename = "${path.module}/../.env"
   content  = <<-EOT
-    # Generated by Terraform - CosmosDB + PostgreSQL configuration
+    # Generated by Terraform - CosmosDB + PostgreSQL + Event Hub + OpenAI configuration
     AZURE_RESOURCE_GROUP=${azurerm_resource_group.example.name}
 
     COSMOSDB_ACCOUNT_NAME=${azurerm_cosmosdb_account.example.name}
@@ -1810,5 +1645,16 @@ resource "local_file" "env_file" {
     POSTGRES_DB_NAME=${azurerm_postgresql_flexible_server_database.example.name}
     POSTGRES_ADMIN_LOGIN=${azurerm_postgresql_flexible_server.example.administrator_login}
     POSTGRES_ADMIN_PASSWORD=${azurerm_postgresql_flexible_server.example.administrator_password}
+
+    EVENTHUB_NAMESPACE=${azurerm_eventhub_namespace.example.name}
+    EVENTHUB_NAME=${azurerm_eventhub.example.name}
+    EVENTHUB_POLICY_NAME=${azurerm_eventhub_authorization_rule.example.name}
+    EVENTHUB_CONNECTION_STRING=${azurerm_eventhub_authorization_rule.example.primary_connection_string}
+
+    AZURE_OPENAI_ENDPOINT=${azurerm_cognitive_account.openai.endpoint}
+    AZURE_OPENAI_DEPLOYMENT_NAME=${azurerm_cognitive_deployment.gpt4o.name}
+
+    STAGING_STORAGE_ACCOUNT=${azurerm_storage_account.staging.name}
+    STAGING_STORAGE_CONN_STRING=${azurerm_storage_account.staging.primary_connection_string}
   EOT
 }

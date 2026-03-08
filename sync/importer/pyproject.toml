@@ -1,0 +1,13 @@
+[project]
+name = "sync-importer"
+version = "0.1.0"
+description = "Container App Job that imports staged data into Azure Postgres, Cosmos DB, and Event Hub"
+requires-python = ">=3.12"
+dependencies = [
+    "azure-storage-blob",
+    "azure-cosmos",
+    "azure-identity",
+    "psycopg2-binary",
+    "azure-eventhub",
+    "pyarrow",
+]

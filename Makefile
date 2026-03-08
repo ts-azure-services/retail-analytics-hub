@@ -15,75 +15,18 @@ clean-local: ## [util] Delete local DuckDB database files
 	@rm -f event_hubs.duckdb event_hubs.duckdb.wal
 	@echo "✓ Local databases removed"
 
-seed-all: ## [util] Seed all databases: CosmosDB (customers) + PostgreSQL (products/orders)
-	@echo ""
-	@echo "============================================================"
-	@echo "🌱 Starting Data Seeding Process"
-	@echo "============================================================"
-	@echo ""
-	@echo "Phase 1: CosmosDB"
-	@cd seed-data && uv run seed_cosmos.py || echo "⚠ CosmosDB seeding failed, continuing with PostgreSQL..."
-	@echo ""
-	@echo "Phase 2: PostgreSQL"
-	@cd seed-data && uv run seed_postgres.py || (echo "✗ PostgreSQL seeding failed!" && exit 1)
-	@echo ""
-	@echo "============================================================"
-	@echo "✓ All seeding operations completed!"
-	@echo "============================================================"
-	@echo ""
 
-seed-all-with-history: ## [core] ② Full seed: base data + historical data for analytics
-	@echo ""
-	@echo "============================================================"
-	@echo "🌱 Full Data Seeding (Base + Historical)"
-	@echo "============================================================"
-	@echo ""
-	@echo "Phase 1: PostgreSQL foundation (suppliers, products)"
-	@cd seed-data && uv run seed_postgres.py --phase 1 || (echo "✗ Phase 1 failed!" && exit 1)
-	@echo ""
-	@echo "Phase 2: CosmosDB customers (source of truth)"
-	@cd seed-data && uv run seed_cosmos.py --customers-only || (echo "✗ Phase 2 failed!" && exit 1)
-	@echo ""
-	@echo "Phase 3: PostgreSQL dependencies (import customers, policies, orders)"
-	@cd seed-data && uv run seed_postgres.py --phase 2 || (echo "✗ Phase 3 failed!" && exit 1)
-	@echo ""
-	@echo "Phase 4: CosmosDB dependencies (carts, events + 30 days history)"
-	@cd seed-data && uv run seed_cosmos.py --skip-customers --historical --days 30 || (echo "✗ Phase 4 failed!" && exit 1)
-	@echo "============================================================"
-	@echo "✓ All seeding operations completed!"
-	@echo "============================================================"
-	@echo ""
-
-cleanse-data-force: ## [util] Clean all data WITHOUT confirmation (use with caution!)
-	@echo ""
-	@echo "============================================================"
-	@echo "🧹 Data Cleansing - Reset to Empty State (FORCE)"
-	@echo "============================================================"
-	@echo ""
-	@echo "Phase 1: Cleaning PostgreSQL..."
-	@cd seed-data && uv run cleanup_postgres.py || echo "⚠ PostgreSQL cleanup failed"
-	@echo ""
-	@echo "Phase 2: Cleaning CosmosDB..."
-	@cd seed-data && uv run cleanup_cosmos.py || echo "⚠ CosmosDB cleanup failed"
-	@echo ""
-	@echo "============================================================"
-	@echo "✓ Data cleansing completed!"
-	@echo "============================================================"
-	@echo ""
-
-validate-all: ## [util] Validate data in all databases (CosmosDB + PostgreSQL + local DuckDB)
-	uv run seed-data/validate_data.py --all
+validate-cloud: ## [core] Compare local DuckDB row counts vs. cloud Postgres & Cosmos
+	uv run python -m sync.validate_cloud
 
 validate-local: ## [core] Validate local DuckDB databases (tables, schema, row counts)
 	uv run seed-data/validate_data.py --local
 
-## Validate CosmosDB data (count documents, show samples)
-validate-cosmos:
-	uv run seed-data/validate_data.py --cosmos
+validate-cosmos: ## [util] Compare local Cosmos DuckDB vs. cloud Azure Cosmos
+	uv run python -m sync.validate_cloud --cosmos
 
-## Validate PostgreSQL data (count rows, show samples)
-validate-postgres:
-	uv run seed-data/validate_data.py --postgres
+validate-postgres: ## [util] Compare local Postgres DuckDB vs. cloud Azure Postgres
+	uv run python -m sync.validate_cloud --postgres
 
 
 ##@ Parameter Sweeps & ML
@@ -407,32 +350,102 @@ agents-down: ## [core] Stop agent services
 agents-logs: ## [util] Tail agent service logs
 	docker compose -f agents/docker-compose.yml logs -f
 
-agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
-	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
+# agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
+# 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
+#
+# agent3-dev: ## [util] Start Agent 3 with auto-reload
+# 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
 
-agent3-dev: ## [util] Start Agent 3 with auto-reload
-	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
+
+# =============================================================================
+##@ Data Sync
+# =============================================================================
+
+sync-export: ## [core] (Local) Export local DuckDB data to sync/staging/ (Parquet + NDJSON)
+	@echo ""
+	@echo "============================================================"
+	@echo "Exporting local DuckDB data to sync/staging/"
+	@echo "============================================================"
+	@echo ""
+	@echo "--- PostgreSQL (Parquet) ---"
+	@uv run python -m sync.export_postgres
+	@echo ""
+	@echo "--- CosmosDB (NDJSON) ---"
+	@uv run python -m sync.export_cosmos
+	@echo ""
+	@echo "--- Event Hub (NDJSON) ---"
+	@uv run python -m sync.export_eventhub
+	@echo ""
+	@echo "============================================================"
+	@echo "Export complete. Files in sync/staging/"
+	@echo "============================================================"
+
+sync-upload: ## [core] Upload sync/staging/ to Azure Blob Storage
+	@echo "Uploading staged files to Azure Blob Storage..."
+	@uv run python -m sync.upload
+
+sync-import: ## [core] Trigger importer Container App Job in Azure
+	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read importer_job_name or resource_group from Terraform output."; \
+		echo "Run 'make tf' first to provision cloud infrastructure."; \
+		exit 1; \
+	fi
+	@echo "Starting importer job: $(IMPORTER_JOB) in $(RG)..."
+	az containerapp job start -n "$(IMPORTER_JOB)" -g "$(RG)"
+
+sync-all: sync-export sync-upload sync-import ## [core] Full sync pipeline: export + upload + import
+
+sync-clean: ## [util] (Local) Remove sync/staging/ directory
+	@echo "Removing sync/staging/..."
+	@rm -rf sync/staging/
+	@echo "Done."
+
+sync-push: ## [util] Build importer image in ACR (cloud-native, avoids arch conflicts)
+	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
+	@if [ -z "$(ACR_NAME)" ]; then \
+		echo "ERROR: Could not read container_registry_name from Terraform output."; \
+		exit 1; \
+	fi
+	@echo "Building sync-importer in ACR (az acr build)..."
+	az acr build --registry $(ACR_NAME) --image sync-importer:latest --platform linux/amd64 sync/importer/
+
+sync-deploy: sync-push ## [core] Build image in ACR, then update Container App Job
+	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
+	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ] || [ -z "$(ACR_SERVER)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Updating Container App Job image to $(ACR_SERVER)/sync-importer:latest..."
+	az containerapp job update -n "$(IMPORTER_JOB)" -g "$(RG)" \
+		--image "$(ACR_SERVER)/sync-importer:latest"
+	@echo "✓ Importer job updated with latest image"
 
 
 # =============================================================================
 ##@ Infrastructure (Cloud)
 # =============================================================================
 
-tf: init plan apply ## [core] Provision CosmosDB + PostgreSQL via Terraform
-	@echo "\033[0;32m✅ Terraform infrastructure provisioned!\033[0m"
+# Environment toggle: dev (no VNET, fast) or prod (full zero-trust)
+# Usage: make tf ENV=dev  (default)
+#        make tf ENV=prod
+ENV ?= dev
+FABRIC_ADMIN ?= $(shell az ad signed-in-user show --query userPrincipalName -o tsv 2>/dev/null)
+TF_ENV_VARS = -var="environment=$(ENV)" -var="fabric_admin_upn=$(FABRIC_ADMIN)"
 
-init: ## [util] Initialize Terraform in infra/cloud (reuses cache, retries on network failure)
-	@set -e; \
-	for i in 1 2 3; do \
-		echo "Terraform init attempt $$i/3..."; \
-		TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/cloud init && exit 0; \
-		echo "Init failed, retrying in 10s..."; \
-		sleep 10; \
-	done; \
-	echo "Terraform init failed after 3 attempts"; \
-	exit 1
+tf: init-clean plan apply ## [core] Provision CosmosDB + PostgreSQL via Terraform
+	@echo "\033[0;32m✅ Terraform infrastructure provisioned ($(ENV))!\033[0m"
 
-init-clean: ## [util] Reinitialize Terraform from clean local state
+tf-dev: ## [core] Provision cloud infra in dev mode (no VNET, fast destroy)
+	@$(MAKE) tf ENV=dev
+
+tf-prod: ## [core] Provision cloud infra in prod mode (full VNET + private endpoints)
+	@$(MAKE) tf ENV=prod
+
+init-clean: ## [util] Initialize Terraform from clean state (retries on network failure)
 	rm -rf infra/cloud/.terraform.lock.hcl
 	rm -rf infra/cloud/.terraform
 	rm -rf infra/cloud/terraform.tfstate
@@ -443,16 +456,23 @@ init-clean: ## [util] Reinitialize Terraform from clean local state
 		exit 1; \
 	fi; \
 	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/cloud init --upgrade
+	for i in 1 2 3; do \
+		echo "Terraform init (cloud) attempt $$i/3..."; \
+		ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID TF_REGISTRY_CLIENT_TIMEOUT=60 terraform -chdir=infra/cloud init --upgrade && exit 0; \
+		echo "Init (cloud) failed, retrying in 10s..."; \
+		sleep 10; \
+	done; \
+	echo "Terraform init (cloud) failed after 3 attempts"; \
+	exit 1
 
-plan: ## [util] Preview Terraform changes
+plan: ## [util] Preview Terraform changes; can run: make plan apply ENV=dev
 	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
 	if [ -z "$$SUBSCRIPTION_ID" ]; then \
 		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
 		exit 1; \
 	fi; \
-	echo "Using Azure subscription: $$SUBSCRIPTION_ID"; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud plan -out=tfplan
+	echo "Using Azure subscription: $$SUBSCRIPTION_ID (env=$(ENV))"; \
+	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud plan $(TF_ENV_VARS) -out=tfplan
 
 apply: ## [util] Apply Terraform plan
 	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \

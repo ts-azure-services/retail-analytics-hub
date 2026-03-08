@@ -1187,14 +1187,6 @@ resource "azurerm_container_app_environment" "env" {
   infrastructure_subnet_id       = local.is_prod ? azurerm_subnet.containerapp[0].id : null
   internal_load_balancer_enabled = local.is_prod ? false : null
 
-  # Dedicated D4 workload profile for higher CPU/memory jobs
-  workload_profile {
-    name                  = "Dedicated-D4"
-    workload_profile_type = "D4"
-    minimum_count         = 0
-    maximum_count         = 1
-  }
-
   tags = local.common_tags
 }
 
@@ -1207,7 +1199,6 @@ resource "azurerm_container_app_job" "importer" {
   resource_group_name          = azurerm_resource_group.example.name
   location                     = azurerm_resource_group.example.location
   container_app_environment_id = azurerm_container_app_environment.env.id
-  workload_profile_name        = "Dedicated-D4"
 
   replica_timeout_in_seconds = 1800
   replica_retry_limit        = 1
@@ -1222,18 +1213,14 @@ resource "azurerm_container_app_job" "importer" {
     type = "SystemAssigned"
   }
 
-  # Pull from ACR using managed identity
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "System"
-  }
+  # registry block added by `make sync-deploy` after AcrPull role exists
 
   template {
     container {
       name   = "importer"
-      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder — update via `make sync-deploy`
-      cpu    = 4.0
-      memory = "8Gi"
+      image  = "mcr.microsoft.com/k8se/quickstart:latest" # placeholder — update via `make sync-deploy`
+      cpu    = 2.0
+      memory = "4Gi"
 
       env {
         name  = "POSTGRES_FQDN"
@@ -1340,10 +1327,7 @@ resource "azurerm_container_app" "dashboard" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "System"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = true
@@ -1355,11 +1339,11 @@ resource "azurerm_container_app" "dashboard" {
   }
 
   template {
-    min_replicas = 1
+    min_replicas = 0
     max_replicas = 2
     container {
       name   = "dashboard"
-      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder — update via make cloud-deploy
+      image  = "mcr.microsoft.com/k8se/quickstart:latest" # placeholder — update via make cloud-deploy
       cpu    = 0.5
       memory = "1Gi"
 
@@ -1384,16 +1368,7 @@ resource "azurerm_container_app" "dashboard" {
         value = "http://${local.ca_agent3}"
       }
 
-      liveness_probe {
-        path      = "/api/health"
-        port      = 3001
-        transport = "HTTP"
-      }
-      readiness_probe {
-        path      = "/api/health"
-        port      = 3001
-        transport = "HTTP"
-      }
+      # liveness_probe and readiness_probe added back after real image deploy
     }
   }
 
@@ -1415,10 +1390,7 @@ resource "azurerm_container_app" "agent1" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "System"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = false
@@ -1430,11 +1402,11 @@ resource "azurerm_container_app" "agent1" {
   }
 
   template {
-    min_replicas = 1
+    min_replicas = 0
     max_replicas = 2
     container {
       name   = "agent1"
-      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder
+      image  = "mcr.microsoft.com/k8se/quickstart:latest" # placeholder
       cpu    = 0.5
       memory = "1Gi"
 
@@ -1451,16 +1423,7 @@ resource "azurerm_container_app" "agent1" {
         value = azurerm_cognitive_account.openai.endpoint
       }
 
-      liveness_probe {
-        path      = "/health"
-        port      = 8001
-        transport = "HTTP"
-      }
-      readiness_probe {
-        path      = "/health"
-        port      = 8001
-        transport = "HTTP"
-      }
+      # liveness_probe and readiness_probe added back after real image deploy
     }
   }
 
@@ -1482,10 +1445,7 @@ resource "azurerm_container_app" "agent2" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "System"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = false
@@ -1497,11 +1457,11 @@ resource "azurerm_container_app" "agent2" {
   }
 
   template {
-    min_replicas = 1
+    min_replicas = 0
     max_replicas = 2
     container {
       name   = "agent2"
-      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder
+      image  = "mcr.microsoft.com/k8se/quickstart:latest" # placeholder
       cpu    = 0.5
       memory = "1Gi"
 
@@ -1518,16 +1478,7 @@ resource "azurerm_container_app" "agent2" {
         value = azurerm_cognitive_account.openai.endpoint
       }
 
-      liveness_probe {
-        path      = "/health"
-        port      = 8002
-        transport = "HTTP"
-      }
-      readiness_probe {
-        path      = "/health"
-        port      = 8002
-        transport = "HTTP"
-      }
+      # liveness_probe and readiness_probe added back after real image deploy
     }
   }
 
@@ -1549,10 +1500,7 @@ resource "azurerm_container_app" "agent3" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "System"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = false
@@ -1564,11 +1512,11 @@ resource "azurerm_container_app" "agent3" {
   }
 
   template {
-    min_replicas = 1
+    min_replicas = 0
     max_replicas = 2
     container {
       name   = "agent3"
-      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder
+      image  = "mcr.microsoft.com/k8se/quickstart:latest" # placeholder
       cpu    = 0.5
       memory = "1Gi"
 
@@ -1585,16 +1533,7 @@ resource "azurerm_container_app" "agent3" {
         value = azurerm_cognitive_account.openai.endpoint
       }
 
-      liveness_probe {
-        path      = "/health"
-        port      = 8003
-        transport = "HTTP"
-      }
-      readiness_probe {
-        path      = "/health"
-        port      = 8003
-        transport = "HTTP"
-      }
+      # liveness_probe and readiness_probe added back after real image deploy
     }
   }
 
@@ -2065,6 +2004,7 @@ resource "local_file" "env_file" {
     STAGING_STORAGE_ACCOUNT=${azurerm_storage_account.staging.name}
     STAGING_STORAGE_CONN_STRING=${azurerm_storage_account.staging.primary_connection_string}
 
+    FABRIC_WORKSPACE_ID=${fabric_workspace.example.id}
     FABRIC_SQL_ENDPOINT=${var.fabric_sql_endpoint}
 
     DASHBOARD_URL=https://${azurerm_container_app.dashboard.ingress[0].fqdn}

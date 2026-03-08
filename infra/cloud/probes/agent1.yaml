@@ -1,0 +1,17 @@
+properties:
+  template:
+    scale:
+      minReplicas: 1
+    containers:
+      - name: agent1
+        probes:
+          - type: Liveness
+            httpGet:
+              path: /health
+              port: 8001
+              scheme: HTTP
+          - type: Readiness
+            httpGet:
+              path: /health
+              port: 8001
+              scheme: HTTP

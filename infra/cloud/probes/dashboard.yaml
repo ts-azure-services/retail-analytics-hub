@@ -1,0 +1,17 @@
+properties:
+  template:
+    scale:
+      minReplicas: 1
+    containers:
+      - name: dashboard
+        probes:
+          - type: Liveness
+            httpGet:
+              path: /api/health
+              port: 3001
+              scheme: HTTP
+          - type: Readiness
+            httpGet:
+              path: /api/health
+              port: 3001
+              scheme: HTTP

@@ -395,12 +395,17 @@ cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Contain
 		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
 		exit 1; \
 	fi
-	@echo "Updating Container App images..."
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest"
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest"
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest"
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest"
-	@echo "\033[0;32m✅ All Container Apps updated!\033[0m"
+	@echo "Updating Container App images (with ACR registry + health probes)..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	@echo "Enabling health probes and min_replicas..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent2.yaml
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent3.yaml
+	@echo "\033[0;32m✅ All Container Apps updated with health probes!\033[0m"
 
 cloud-logs: ## [util] Tail Container App logs for all services
 	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
@@ -487,6 +492,9 @@ sync-deploy: sync-push ## [core] Build image in ACR, then update Container App J
 		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
 		exit 1; \
 	fi
+	@echo "Configuring ACR registry on importer job..."
+	az containerapp job registry set -n "$(IMPORTER_JOB)" -g "$(RG)" \
+		--server "$(ACR_SERVER)" --identity system
 	@echo "Updating Container App Job image to $(ACR_SERVER)/sync-importer:latest..."
 	az containerapp job update -n "$(IMPORTER_JOB)" -g "$(RG)" \
 		--image "$(ACR_SERVER)/sync-importer:latest"
@@ -574,6 +582,15 @@ delete-cloud: ## [core] Delete cloud resource groups (tag: tf=cloud) and purge s
 				done; \
 		done; \
 	fi
+	@echo "Purging all soft-deleted Cognitive Services accounts..."
+	@az cognitiveservices account list-deleted --subscription "$(subscription_id)" \
+		--query "[].[id, name, location]" -o tsv 2>/dev/null | \
+		while IFS=$$'\t' read -r id name location; do \
+			rg_name=$$(echo "$$id" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
+			echo "  Purging: $$name ($$location) from $$rg_name"; \
+			az cognitiveservices account purge --subscription "$(subscription_id)" \
+				-l "$$location" -n "$$name" -g "$$rg_name" 2>/dev/null || true; \
+		done
 	@echo "Cleaning up cloud Terraform state..."
 	@rm -f infra/cloud/terraform.tfstate infra/cloud/terraform.tfstate.backup infra/cloud/tfplan
 	@echo ""

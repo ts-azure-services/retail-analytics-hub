@@ -38,7 +38,7 @@ def create_data_analyzer() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name=settings.gpt_5_1_deployment,
+        deployment_name=settings.gpt_5_2_deployment,
     )
     agent = ChatAgent(
         chat_client=client,
@@ -55,7 +55,7 @@ def create_deep_reasoner() -> AgentExecutor:
         endpoint=settings.azure_openai_endpoint,
         ad_token_provider=get_azure_token_provider(),
         api_version=settings.azure_openai_api_version,
-        deployment_name=settings.gpt_5_1_deployment,
+        deployment_name=settings.gpt_5_2_deployment,
     )
     agent = ChatAgent(
         chat_client=client,

@@ -49,7 +49,10 @@ class Settings(BaseSettings):
 
     # ── Deployment names (from Terraform / local.env) ─────────────
     gpt_4o_mini_deployment: str = "gpt-4o-mini"
-    gpt_5_1_deployment: str = "gpt-5-1"
+    gpt_5_2_deployment: str = "gpt-5-2"
+
+    # ── Fabric SQL endpoint (cloud — empty means local DuckDB) ───
+    fabric_sql_endpoint: str = ""
 
     # ── DuckDB paths ──────────────────────────────────────────────
     local_postgres_db: str = Field(

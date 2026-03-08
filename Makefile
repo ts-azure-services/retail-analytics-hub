@@ -358,6 +358,74 @@ agents-logs: ## [util] Tail agent service logs
 
 
 # =============================================================================
+##@ Cloud Deployment
+# =============================================================================
+
+cloud-build: cloud-dashboard-build cloud-agents-build ## [core] Build all 4 images in ACR (no local Docker needed)
+	@echo "\033[0;32m✅ All images built in ACR!\033[0m"
+
+cloud-dashboard-build: ## [util] Build dashboard image in ACR
+	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
+	@if [ -z "$(ACR_NAME)" ]; then \
+		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Building dashboard in ACR..."
+	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/
+
+cloud-agents-build: ## [util] Build all 3 agent images in ACR
+	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
+	@if [ -z "$(ACR_NAME)" ]; then \
+		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Building agent images in ACR..."
+	az acr build --registry $(ACR_NAME) --image agent1-explainer:latest --platform linux/amd64 -f agents/agent1_explainer/Dockerfile .
+	az acr build --registry $(ACR_NAME) --image agent2-narrative:latest --platform linux/amd64 -f agents/agent2_narrative/Dockerfile .
+	az acr build --registry $(ACR_NAME) --image agent3-sentiment:latest --platform linux/amd64 -f agents/agent3_sentiment/Dockerfile .
+
+cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Container Apps
+	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
+	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
+	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
+	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
+	@if [ -z "$(ACR_SERVER)" ] || [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Updating Container App images..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest"
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest"
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest"
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest"
+	@echo "\033[0;32m✅ All Container Apps updated!\033[0m"
+
+cloud-logs: ## [util] Tail Container App logs for all services
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
+	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
+	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
+	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
+	@if [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Tailing logs for all Container Apps..."
+	@echo "Dashboard: $(DASHBOARD_APP)"
+	@echo "Agent 1:   $(AGENT1_APP)"
+	@echo "Agent 2:   $(AGENT2_APP)"
+	@echo "Agent 3:   $(AGENT3_APP)"
+	@echo ""
+	az containerapp logs show -n "$(DASHBOARD_APP)" -g "$(RG)" --follow &
+	az containerapp logs show -n "$(AGENT1_APP)" -g "$(RG)" --follow &
+	az containerapp logs show -n "$(AGENT2_APP)" -g "$(RG)" --follow &
+	az containerapp logs show -n "$(AGENT3_APP)" -g "$(RG)" --follow &
+	@wait
+
+
+# =============================================================================
 ##@ Data Sync
 # =============================================================================
 

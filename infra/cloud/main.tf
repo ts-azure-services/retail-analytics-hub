@@ -82,9 +82,21 @@ variable "fabric_admin_upn" {
   description = "UPN (email) of the Fabric Capacity administrator"
 }
 
+variable "fabric_sql_endpoint" {
+  description = "Fabric SQL endpoint connection string (set after manual Fabric mirroring setup)"
+  type        = string
+  default     = ""
+}
+
 locals {
-  is_prod     = var.environment == "prod"
+  is_prod      = var.environment == "prod"
   fabric_admin = var.fabric_admin_upn
+
+  # Container App names (used for internal DNS references)
+  ca_dashboard = "ca-dashboard-${random_string.suffix.result}"
+  ca_agent1    = "ca-agent1-explainer-${random_string.suffix.result}"
+  ca_agent2    = "ca-agent2-narrative-${random_string.suffix.result}"
+  ca_agent3    = "ca-agent3-sentiment-${random_string.suffix.result}"
 
   # Common tags applied to all resources
   common_tags = {
@@ -778,20 +790,37 @@ resource "azurerm_cognitive_account" "openai" {
   tags = local.common_tags
 }
 
-# Create GPT-4o Deployment
-resource "azurerm_cognitive_deployment" "gpt4o" {
-  name                 = "gpt-4o"
+# Create GPT-4o-mini Deployment
+resource "azurerm_cognitive_deployment" "gpt4o_mini" {
+  name                 = "gpt-4o-mini"
   cognitive_account_id = azurerm_cognitive_account.openai.id
 
   model {
     format  = "OpenAI"
-    name    = "gpt-4o"
-    version = "2024-11-20"
+    name    = "gpt-4o-mini"
+    version = "2024-07-18"
   }
 
   sku {
     name     = "GlobalStandard"
-    capacity = 50
+    capacity = 900
+  }
+}
+
+# Create GPT-5.1 Deployment
+resource "azurerm_cognitive_deployment" "gpt52" {
+  name                 = "gpt-5.2"
+  cognitive_account_id = azurerm_cognitive_account.openai.id
+
+  model {
+    format  = "OpenAI"
+    name    = "gpt-5.2"
+    version = "2025-12-11"
+  }
+
+  sku {
+    name     = "GlobalStandard"
+    capacity = 900
   }
 }
 
@@ -1128,7 +1157,7 @@ resource "azurerm_container_registry" "acr" {
   resource_group_name = azurerm_resource_group.example.name
   location            = azurerm_resource_group.example.location
   sku                 = local.is_prod ? "Premium" : "Basic" # Premium required for private endpoints
-  admin_enabled       = false                                # Disabled - using managed identity instead
+  admin_enabled       = false                               # Disabled - using managed identity instead
 
   # dev: public access; prod: private endpoints only
   public_network_access_enabled = local.is_prod ? false : true
@@ -1158,6 +1187,14 @@ resource "azurerm_container_app_environment" "env" {
   infrastructure_subnet_id       = local.is_prod ? azurerm_subnet.containerapp[0].id : null
   internal_load_balancer_enabled = local.is_prod ? false : null
 
+  # Dedicated D4 workload profile for higher CPU/memory jobs
+  workload_profile {
+    name                  = "Dedicated-D4"
+    workload_profile_type = "D4"
+    minimum_count         = 0
+    maximum_count         = 1
+  }
+
   tags = local.common_tags
 }
 
@@ -1170,6 +1207,7 @@ resource "azurerm_container_app_job" "importer" {
   resource_group_name          = azurerm_resource_group.example.name
   location                     = azurerm_resource_group.example.location
   container_app_environment_id = azurerm_container_app_environment.env.id
+  workload_profile_name        = "Dedicated-D4"
 
   replica_timeout_in_seconds = 1800
   replica_retry_limit        = 1
@@ -1281,6 +1319,336 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "im
   object_id           = azurerm_container_app_job.importer.identity[0].principal_id
   principal_name      = "caj-importer-${random_string.suffix.result}"
   principal_type      = "ServicePrincipal"
+}
+
+# =============================================================================
+# CONTAINER APPS — DASHBOARD + AGENTS
+# =============================================================================
+
+# ── Dashboard ────────────────────────────────────────────────────
+
+resource "azurerm_container_app" "dashboard" {
+  name                         = local.ca_dashboard
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.example.name
+  revision_mode                = "Single"
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+  }
+
+  identity { type = "SystemAssigned" }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "System"
+  }
+
+  ingress {
+    external_enabled = true
+    target_port      = 3001
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+
+  template {
+    min_replicas = 1
+    max_replicas = 2
+    container {
+      name   = "dashboard"
+      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder — update via make cloud-deploy
+      cpu    = 0.5
+      memory = "1Gi"
+
+      env {
+        name  = "DASHBOARD_API_PORT"
+        value = "3001"
+      }
+      env {
+        name  = "FABRIC_SQL_ENDPOINT"
+        value = var.fabric_sql_endpoint
+      }
+      env {
+        name  = "ALLOWED_ORIGINS"
+        value = "https://${local.ca_dashboard}.${azurerm_container_app_environment.env.default_domain}"
+      }
+      env {
+        name  = "AGENT2_URL"
+        value = "http://${local.ca_agent2}"
+      }
+      env {
+        name  = "AGENT3_URL"
+        value = "http://${local.ca_agent3}"
+      }
+
+      liveness_probe {
+        path      = "/api/health"
+        port      = 3001
+        transport = "HTTP"
+      }
+      readiness_probe {
+        path      = "/api/health"
+        port      = 3001
+        transport = "HTTP"
+      }
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# ── Agent 1 — Explainer ─────────────────────────────────────────
+
+resource "azurerm_container_app" "agent1" {
+  name                         = local.ca_agent1
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.example.name
+  revision_mode                = "Single"
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+  }
+
+  identity { type = "SystemAssigned" }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "System"
+  }
+
+  ingress {
+    external_enabled = false
+    target_port      = 8001
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+
+  template {
+    min_replicas = 1
+    max_replicas = 2
+    container {
+      name   = "agent1"
+      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder
+      cpu    = 0.5
+      memory = "1Gi"
+
+      env {
+        name  = "AGENT_MODEL"
+        value = "gpt-4o-mini"
+      }
+      env {
+        name  = "FABRIC_SQL_ENDPOINT"
+        value = var.fabric_sql_endpoint
+      }
+      env {
+        name  = "AZURE_OPENAI_ENDPOINT"
+        value = azurerm_cognitive_account.openai.endpoint
+      }
+
+      liveness_probe {
+        path      = "/health"
+        port      = 8001
+        transport = "HTTP"
+      }
+      readiness_probe {
+        path      = "/health"
+        port      = 8001
+        transport = "HTTP"
+      }
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# ── Agent 2 — Narrative ─────────────────────────────────────────
+
+resource "azurerm_container_app" "agent2" {
+  name                         = local.ca_agent2
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.example.name
+  revision_mode                = "Single"
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+  }
+
+  identity { type = "SystemAssigned" }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "System"
+  }
+
+  ingress {
+    external_enabled = false
+    target_port      = 8002
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+
+  template {
+    min_replicas = 1
+    max_replicas = 2
+    container {
+      name   = "agent2"
+      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder
+      cpu    = 0.5
+      memory = "1Gi"
+
+      env {
+        name  = "AGENT_MODEL"
+        value = "gpt-5.2"
+      }
+      env {
+        name  = "FABRIC_SQL_ENDPOINT"
+        value = var.fabric_sql_endpoint
+      }
+      env {
+        name  = "AZURE_OPENAI_ENDPOINT"
+        value = azurerm_cognitive_account.openai.endpoint
+      }
+
+      liveness_probe {
+        path      = "/health"
+        port      = 8002
+        transport = "HTTP"
+      }
+      readiness_probe {
+        path      = "/health"
+        port      = 8002
+        transport = "HTTP"
+      }
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# ── Agent 3 — Sentiment ─────────────────────────────────────────
+
+resource "azurerm_container_app" "agent3" {
+  name                         = local.ca_agent3
+  container_app_environment_id = azurerm_container_app_environment.env.id
+  resource_group_name          = azurerm_resource_group.example.name
+  revision_mode                = "Single"
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+  }
+
+  identity { type = "SystemAssigned" }
+
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "System"
+  }
+
+  ingress {
+    external_enabled = false
+    target_port      = 8003
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+
+  template {
+    min_replicas = 1
+    max_replicas = 2
+    container {
+      name   = "agent3"
+      image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder
+      cpu    = 0.5
+      memory = "1Gi"
+
+      env {
+        name  = "AGENT_MODEL"
+        value = "gpt-4o-mini"
+      }
+      env {
+        name  = "FABRIC_SQL_ENDPOINT"
+        value = var.fabric_sql_endpoint
+      }
+      env {
+        name  = "AZURE_OPENAI_ENDPOINT"
+        value = azurerm_cognitive_account.openai.endpoint
+      }
+
+      liveness_probe {
+        path      = "/health"
+        port      = 8003
+        transport = "HTTP"
+      }
+      readiness_probe {
+        path      = "/health"
+        port      = 8003
+        transport = "HTTP"
+      }
+    }
+  }
+
+  tags = local.common_tags
+}
+
+# =============================================================================
+# RBAC FOR CONTAINER APP MANAGED IDENTITIES
+# =============================================================================
+
+# ── AcrPull — all 4 apps ────────────────────────────────────────
+
+resource "azurerm_role_assignment" "dashboard_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_container_app.dashboard.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "agent1_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_container_app.agent1.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "agent2_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_container_app.agent2.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "agent3_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_container_app.agent3.identity[0].principal_id
+}
+
+# ── Cognitive Services OpenAI User — agents only ─────────────────
+
+resource "azurerm_role_assignment" "agent1_openai" {
+  scope                = azurerm_cognitive_account.openai.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_container_app.agent1.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "agent2_openai" {
+  scope                = azurerm_cognitive_account.openai.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_container_app.agent2.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "agent3_openai" {
+  scope                = azurerm_cognitive_account.openai.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_container_app.agent3.identity[0].principal_id
 }
 
 # =============================================================================
@@ -1619,16 +1987,51 @@ output "openai_endpoint" {
   description = "The endpoint for the Azure OpenAI account"
 }
 
-# GPT-4o Deployment Name
-output "openai_deployment_name" {
-  value       = azurerm_cognitive_deployment.gpt4o.name
-  description = "The name of the GPT-4o deployment"
+# GPT-4o-mini Deployment Name
+output "openai_deployment_gpt4o_mini" {
+  value       = azurerm_cognitive_deployment.gpt4o_mini.name
+  description = "The name of the GPT-4o-mini deployment"
+}
+
+# GPT-5.1 Deployment Name
+output "openai_deployment_gpt52" {
+  value       = azurerm_cognitive_deployment.gpt52.name
+  description = "The name of the GPT-5.1 deployment"
 }
 
 # Container App Job (Importer) Name
 output "importer_job_name" {
   value       = azurerm_container_app_job.importer.name
   description = "The name of the importer Container App Job"
+}
+
+# =============================================================================
+# CONTAINER APP OUTPUTS
+# =============================================================================
+
+output "dashboard_url" {
+  value       = "https://${azurerm_container_app.dashboard.ingress[0].fqdn}"
+  description = "The public URL of the dashboard Container App"
+}
+
+output "dashboard_app_name" {
+  value       = azurerm_container_app.dashboard.name
+  description = "The name of the dashboard Container App"
+}
+
+output "agent1_app_name" {
+  value       = azurerm_container_app.agent1.name
+  description = "The name of Agent 1 (Explainer) Container App"
+}
+
+output "agent2_app_name" {
+  value       = azurerm_container_app.agent2.name
+  description = "The name of Agent 2 (Narrative) Container App"
+}
+
+output "agent3_app_name" {
+  value       = azurerm_container_app.agent3.name
+  description = "The name of Agent 3 (Sentiment) Container App"
 }
 
 # Generate .env file for local development
@@ -1656,9 +2059,18 @@ resource "local_file" "env_file" {
     EVENTHUB_CONNECTION_STRING=${azurerm_eventhub_authorization_rule.example.primary_connection_string}
 
     AZURE_OPENAI_ENDPOINT=${azurerm_cognitive_account.openai.endpoint}
-    AZURE_OPENAI_DEPLOYMENT_NAME=${azurerm_cognitive_deployment.gpt4o.name}
+    AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI=${azurerm_cognitive_deployment.gpt4o_mini.name}
+    AZURE_OPENAI_DEPLOYMENT_GPT52=${azurerm_cognitive_deployment.gpt52.name}
 
     STAGING_STORAGE_ACCOUNT=${azurerm_storage_account.staging.name}
     STAGING_STORAGE_CONN_STRING=${azurerm_storage_account.staging.primary_connection_string}
+
+    FABRIC_SQL_ENDPOINT=${var.fabric_sql_endpoint}
+
+    DASHBOARD_URL=https://${azurerm_container_app.dashboard.ingress[0].fqdn}
+    DASHBOARD_APP_NAME=${azurerm_container_app.dashboard.name}
+    AGENT1_APP_NAME=${azurerm_container_app.agent1.name}
+    AGENT2_APP_NAME=${azurerm_container_app.agent2.name}
+    AGENT3_APP_NAME=${azurerm_container_app.agent3.name}
   EOT
 }

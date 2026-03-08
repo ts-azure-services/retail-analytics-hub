@@ -15,7 +15,14 @@ let digestGenerating = false
 
 const app = express()
 
-app.use(cors({ origin: /^https?:\/\/localhost(:\d+)?$/ }))
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+app.use(
+  cors({
+    origin: ALLOWED_ORIGINS
+      ? ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+      : /^https?:\/\/localhost(:\d+)?$/,
+  })
+)
 app.use(express.json())
 
 app.get('/api/health', (_req, res) => {

@@ -680,6 +680,44 @@ validate-postgres: ## [util] Compare local Postgres DuckDB vs. cloud Azure Postg
 
 
 # =============================================================================
+##@ Data Sync - Event Hub only
+# =============================================================================
+sync-eventhub-clean: ## [util] (Local) Remove only sync/staging/eventhub/
+	@echo "Removing sync/staging/eventhub/..."
+	@rm -rf sync/staging/eventhub/
+	@echo "Done."
+
+sync-eventhub-export: ## [util] (Local) Export event_hubs.duckdb to sync/staging/eventhub/ (NDJSON)
+	@echo ""
+	@echo "============================================================"
+	@echo "Exporting event_hubs.duckdb to sync/staging/eventhub/"
+	@echo "============================================================"
+	@echo ""
+	@uv run python -m sync.export_eventhub
+	@echo ""
+	@echo "============================================================"
+	@echo "Event Hub export complete. Files in sync/staging/eventhub/"
+	@echo "============================================================"
+
+sync-eventhub-upload: ## [util] Upload only sync/staging/eventhub/ to Azure Blob Storage
+	@echo "Uploading Event Hub staged files to Azure Blob Storage..."
+	@uv run python -m sync.upload --only eventhub
+
+sync-eventhub-import: ## [util] Trigger importer Container App Job (processes eventhub blobs)
+	$(eval IMPORTER_JOB := $(shell terraform -chdir=infra/cloud output -raw importer_job_name 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	@if [ -z "$(IMPORTER_JOB)" ] || [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read importer_job_name or resource_group from Terraform output."; \
+		echo "Run 'make tf' first to provision cloud infrastructure."; \
+		exit 1; \
+	fi
+	@echo "Starting importer job (Event Hub): $(IMPORTER_JOB) in $(RG)..."
+	az containerapp job start -n "$(IMPORTER_JOB)" -g "$(RG)"
+
+sync-eventhub: sync-eventhub-export sync-eventhub-upload sync-eventhub-import ## [core] Event Hub sync: export + upload + import
+
+
+# =============================================================================
 ##@ Fabric Integration
 # =============================================================================
 setup-cosmos-mirror: ## [core] Setup Cosmos DB mirroring to Fabric (manual operation mainly in Fabric)
@@ -984,6 +1022,10 @@ update-fabric-sql-endpoint: ## [core] Update FABRIC_SQL_ENDPOINT on container ap
 # =============================================================================
 ##@ Fabric Administration
 # =============================================================================
+create-fabric-rti: ## [core] ④  Create Fabric Eventhouse, Eventstream & KQL Database for customer reviews
+	@echo "🚀 Creating Fabric Real-Time Intelligence components..."
+	./fabric-admin-scripts/create-fabric-realtime-intelligence.sh
+
 create-lakehouse: ## [core] ③  Create Fabric Lakehouse for analytics
 	@echo "🏠 Creating Fabric Lakehouse..."
 	./fabric-admin-scripts/create-fabric-lakehouse.sh
@@ -1032,6 +1074,34 @@ cloud-agents-build: ## [util] Build all 3 agent images in ACR
 	az acr build --registry $(ACR_NAME) --image agent2-narrative:latest --platform linux/amd64 -f agents/agent2_narrative/Dockerfile .
 	az acr build --registry $(ACR_NAME) --image agent3-sentiment:latest --platform linux/amd64 -f agents/agent3_sentiment/Dockerfile .
 
+cloud-update: ## [util] Update all Container Apps from existing ACR images (skip build)
+	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
+	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
+	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
+	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
+	@if [ -z "$(ACR_SERVER)" ] || [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "Configuring ACR registry on container apps..."
+	az containerapp registry set -n "$(DASHBOARD_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	az containerapp registry set -n "$(AGENT1_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	az containerapp registry set -n "$(AGENT2_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	az containerapp registry set -n "$(AGENT3_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	@echo "Updating Container App images..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest"
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest"
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest"
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest"
+	@echo "Enabling health probes and min_replicas..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent2.yaml
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent3.yaml
+	@echo "\033[0;32m✅ All Container Apps updated with health probes!\033[0m"
+
 cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Container Apps
 	$(eval ACR_SERVER := $(shell terraform -chdir=infra/cloud output -raw container_registry_login_server 2>/dev/null))
 	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
@@ -1043,11 +1113,16 @@ cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Contain
 		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
 		exit 1; \
 	fi
-	@echo "Updating Container App images (with ACR registry + health probes)..."
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest" --registry-server "$(ACR_SERVER)" --registry-identity system
+	@echo "Configuring ACR registry on container apps..."
+	az containerapp registry set -n "$(DASHBOARD_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	az containerapp registry set -n "$(AGENT1_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	az containerapp registry set -n "$(AGENT2_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	az containerapp registry set -n "$(AGENT3_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
+	@echo "Updating Container App images..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image "$(ACR_SERVER)/dashboard:latest"
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent1-explainer:latest"
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest"
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest"
 	@echo "Enabling health probes and min_replicas..."
 	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
 	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml

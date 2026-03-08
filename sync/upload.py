@@ -3,8 +3,13 @@ Upload sync/staging/ files to Azure Blob Storage.
 
 Uses the azure-storage-blob SDK with a connection string from sync/config.py.
 Overwrites existing blobs (idempotent).
+
+Usage:
+    python -m sync.upload              # upload all subdirectories
+    python -m sync.upload --only eventhub  # upload only eventhub
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -27,7 +32,7 @@ _MAPPING = {
 }
 
 
-def upload() -> None:
+def upload(only: str | None = None) -> None:
     if not STAGING_STORAGE_CONN_STRING:
         print(
             "ERROR: STAGING_STORAGE_CONN_STRING is not set.\n"
@@ -35,10 +40,17 @@ def upload() -> None:
         )
         sys.exit(1)
 
+    mapping = _MAPPING
+    if only:
+        if only not in _MAPPING:
+            print(f"ERROR: Unknown subdirectory '{only}'. Choose from: {', '.join(_MAPPING)}")
+            sys.exit(1)
+        mapping = {only: _MAPPING[only]}
+
     client = BlobServiceClient.from_connection_string(STAGING_STORAGE_CONN_STRING)
 
     total = 0
-    for subdir, container_name in _MAPPING.items():
+    for subdir, container_name in mapping.items():
         local_dir = STAGING_DIR / subdir
         if not local_dir.exists():
             print(f"  Skipping {subdir}/ (not found)")
@@ -67,4 +79,7 @@ def upload() -> None:
 
 
 if __name__ == "__main__":
-    upload()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--only", choices=list(_MAPPING), help="Upload only this subdirectory")
+    args = parser.parse_args()
+    upload(only=args.only)

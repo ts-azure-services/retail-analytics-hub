@@ -1060,8 +1060,11 @@ cloud-dashboard-build: ## [util] Build dashboard image in ACR
 		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
 		exit 1; \
 	fi
+	@echo "Bundling event_hubs.duckdb into dashboard build context..."
+	@cp event_hubs.duckdb dashboard/event_hubs.duckdb
 	@echo "Building dashboard in ACR..."
-	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/
+	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/ ; \
+		rm -f dashboard/event_hubs.duckdb
 
 cloud-agents-build: ## [util] Build all 3 agent images in ACR
 	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
@@ -1096,10 +1099,15 @@ cloud-update: ## [util] Update all Container Apps from existing ACR images (skip
 	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest"
 	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest"
 	@echo "Enabling health probes and min_replicas..."
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent2.yaml
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent3.yaml
+	@sed 's|name: dashboard|name: dashboard\n        image: $(ACR_SERVER)/dashboard:latest|' infra/cloud/probes/dashboard.yaml > /tmp/dashboard-probe.yaml
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml /tmp/dashboard-probe.yaml
+	@sed 's|name: agent1|name: agent1\n        image: $(ACR_SERVER)/agent1-explainer:latest|' infra/cloud/probes/agent1.yaml > /tmp/agent1-probe.yaml
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml /tmp/agent1-probe.yaml
+	@sed 's|name: agent2|name: agent2\n        image: $(ACR_SERVER)/agent2-narrative:latest|' infra/cloud/probes/agent2.yaml > /tmp/agent2-probe.yaml
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml /tmp/agent2-probe.yaml
+	@sed 's|name: agent3|name: agent3\n        image: $(ACR_SERVER)/agent3-sentiment:latest|' infra/cloud/probes/agent3.yaml > /tmp/agent3-probe.yaml
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml /tmp/agent3-probe.yaml
+	@rm -f /tmp/dashboard-probe.yaml /tmp/agent1-probe.yaml /tmp/agent2-probe.yaml /tmp/agent3-probe.yaml
 	@echo "\033[0;32m✅ All Container Apps updated with health probes!\033[0m"
 
 cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Container Apps
@@ -1124,10 +1132,15 @@ cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Contain
 	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent2-narrative:latest"
 	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image "$(ACR_SERVER)/agent3-sentiment:latest"
 	@echo "Enabling health probes and min_replicas..."
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml infra/cloud/probes/dashboard.yaml
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent1.yaml
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent2.yaml
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml infra/cloud/probes/agent3.yaml
+	@sed 's|name: dashboard|name: dashboard\n        image: $(ACR_SERVER)/dashboard:latest|' infra/cloud/probes/dashboard.yaml > /tmp/dashboard-probe.yaml
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml /tmp/dashboard-probe.yaml
+	@sed 's|name: agent1|name: agent1\n        image: $(ACR_SERVER)/agent1-explainer:latest|' infra/cloud/probes/agent1.yaml > /tmp/agent1-probe.yaml
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml /tmp/agent1-probe.yaml
+	@sed 's|name: agent2|name: agent2\n        image: $(ACR_SERVER)/agent2-narrative:latest|' infra/cloud/probes/agent2.yaml > /tmp/agent2-probe.yaml
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml /tmp/agent2-probe.yaml
+	@sed 's|name: agent3|name: agent3\n        image: $(ACR_SERVER)/agent3-sentiment:latest|' infra/cloud/probes/agent3.yaml > /tmp/agent3-probe.yaml
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml /tmp/agent3-probe.yaml
+	@rm -f /tmp/dashboard-probe.yaml /tmp/agent1-probe.yaml /tmp/agent2-probe.yaml /tmp/agent3-probe.yaml
 	@echo "\033[0;32m✅ All Container Apps updated with health probes!\033[0m"
 
 cloud-logs: ## [util] Tail Container App logs for all services

@@ -30,7 +30,8 @@ export async function initDb(dbPath: string): Promise<void> {
 }
 
 export async function initReviewsDb(dbPath: string): Promise<void> {
-  if (FABRIC_SQL_ENDPOINT) return // shares pgPool from initDb
+  // Always use DuckDB for reviews — even in cloud mode the reviews DB is
+  // bundled in the container (KQL-sourced data, not in Fabric SQL endpoint).
   reviewsDb = await Database.create(dbPath, { access_mode: 'READ_ONLY' })
   console.log(`[query-executor] Opened reviews DB ${dbPath} (read-only)`)
 }
@@ -55,13 +56,22 @@ export async function closeReviewsDb(): Promise<void> {
 
 /** Run a single SQL query via the active driver. */
 async function queryRows(sql: string, useReviewsDb = false): Promise<Record<string, unknown>[]> {
+  // Reviews always use the bundled DuckDB (even in cloud mode)
+  if (useReviewsDb) {
+    if (!reviewsDb) throw new Error('Reviews database not initialised')
+    const conn = await reviewsDb.connect()
+    try {
+      return (await conn.all(sql)) as Record<string, unknown>[]
+    } finally {
+      await conn.close()
+    }
+  }
   if (pgPool) {
     const { rows } = await pgPool.query(sql)
     return rows
   }
-  const activeDb = useReviewsDb ? reviewsDb : db
-  if (!activeDb) throw new Error('Database not initialised')
-  const conn = await activeDb.connect()
+  if (!db) throw new Error('Database not initialised')
+  const conn = await db.connect()
   try {
     return (await conn.all(sql)) as Record<string, unknown>[]
   } finally {

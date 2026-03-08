@@ -132,6 +132,16 @@ async function start() {
   } catch (err) {
     console.warn(`[server] Reviews DB not available at ${REVIEWS_DB_PATH} — customer-reviews tab will use seed data only`)
   }
+
+  // Serve static frontend in production
+  if (process.env.NODE_ENV === 'production') {
+    const staticDir = path.resolve(import.meta.dirname, '.')
+    app.use(express.static(staticDir))
+    app.get('/*any', (_req, res) => {
+      res.sendFile(path.join(staticDir, 'index.html'))
+    })
+  }
+
   app.listen(PORT, () => {
     console.log(`[server] Listening on http://localhost:${PORT}`)
   })

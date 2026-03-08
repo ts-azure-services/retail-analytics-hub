@@ -351,10 +351,6 @@ main() {
     echo "  4. Set up database mirroring for CosmosDB and PostgreSQL"
     echo "  5. Upload and run analytics notebooks"
     echo ""
-    echo "  Useful commands:"
-    echo "    make upload-notebooks   - Upload analytics notebooks to workspace"
-    echo "    make run-all-workflows  - Generate simulation data"
-    echo ""
 }
 
 # Run main function

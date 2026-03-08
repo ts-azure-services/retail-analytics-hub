@@ -288,7 +288,6 @@ main() {
     echo ""
     echo "    make create-lakehouse    - Recreate RetailAnalyticsLakehouse"
     echo "    make setup-mirroring     - Configure database mirroring"
-    echo "    make upload-notebooks    - Upload analytics notebooks"
     echo ""
 }
 

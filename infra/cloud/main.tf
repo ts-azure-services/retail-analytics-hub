@@ -1984,25 +1984,25 @@ resource "local_file" "env_file" {
     COSMOSDB_ENDPOINT=${azurerm_cosmosdb_account.example.endpoint}
     COSMOSDB_DATABASE_NAME=${azurerm_cosmosdb_sql_database.example.name}
     COSMOSDB_PRIMARY_KEY=${azurerm_cosmosdb_account.example.primary_key}
-    COSMOSDB_CONNECTION_STRING=${azurerm_cosmosdb_account.example.primary_sql_connection_string}
+    COSMOSDB_CONNECTION_STRING='${azurerm_cosmosdb_account.example.primary_sql_connection_string}'
 
     POSTGRES_SERVER_NAME=${azurerm_postgresql_flexible_server.example.name}
     POSTGRES_FQDN=${azurerm_postgresql_flexible_server.example.fqdn}
     POSTGRES_DB_NAME=${azurerm_postgresql_flexible_server_database.example.name}
     POSTGRES_ADMIN_LOGIN=${azurerm_postgresql_flexible_server.example.administrator_login}
-    POSTGRES_ADMIN_PASSWORD=${azurerm_postgresql_flexible_server.example.administrator_password}
+    POSTGRES_ADMIN_PASSWORD='${azurerm_postgresql_flexible_server.example.administrator_password}'
 
     EVENTHUB_NAMESPACE=${azurerm_eventhub_namespace.example.name}
     EVENTHUB_NAME=${azurerm_eventhub.example.name}
     EVENTHUB_POLICY_NAME=${azurerm_eventhub_authorization_rule.example.name}
-    EVENTHUB_CONNECTION_STRING=${azurerm_eventhub_authorization_rule.example.primary_connection_string}
+    EVENTHUB_CONNECTION_STRING='${azurerm_eventhub_authorization_rule.example.primary_connection_string}'
 
     AZURE_OPENAI_ENDPOINT=${azurerm_cognitive_account.openai.endpoint}
     AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI=${azurerm_cognitive_deployment.gpt4o_mini.name}
     AZURE_OPENAI_DEPLOYMENT_GPT52=${azurerm_cognitive_deployment.gpt52.name}
 
     STAGING_STORAGE_ACCOUNT=${azurerm_storage_account.staging.name}
-    STAGING_STORAGE_CONN_STRING=${azurerm_storage_account.staging.primary_connection_string}
+    STAGING_STORAGE_CONN_STRING='${azurerm_storage_account.staging.primary_connection_string}'
 
     FABRIC_WORKSPACE_ID=${fabric_workspace.example.id}
     FABRIC_SQL_ENDPOINT=${var.fabric_sql_endpoint}

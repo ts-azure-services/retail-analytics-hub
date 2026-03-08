@@ -864,11 +864,15 @@ resource "azurerm_cosmosdb_account" "example" {
   tags = local.common_tags
 }
 
-# Create CosmosDB SQL Database
+# Create CosmosDB SQL Database (shared autoscale throughput across all containers)
 resource "azurerm_cosmosdb_sql_database" "example" {
   name                = "fabric${random_string.suffix.result}db"
   resource_group_name = azurerm_resource_group.example.name
   account_name        = azurerm_cosmosdb_account.example.name
+
+  autoscale_settings {
+    max_throughput = 10000
+  }
 }
 
 # Note: Application containers (Customers, Carts, etc.) are created dynamically by seed scripts
@@ -1167,7 +1171,7 @@ resource "azurerm_container_app_job" "importer" {
   location                     = azurerm_resource_group.example.location
   container_app_environment_id = azurerm_container_app_environment.env.id
 
-  replica_timeout_in_seconds = 600
+  replica_timeout_in_seconds = 1800
   replica_retry_limit        = 1
 
   # Manual trigger mode — started via `az containerapp job start`
@@ -1190,8 +1194,8 @@ resource "azurerm_container_app_job" "importer" {
     container {
       name   = "importer"
       image  = "mcr.microsoft.com/azurelinux/base/core:3.0" # placeholder — update via `make sync-deploy`
-      cpu    = 1.0
-      memory = "2Gi"
+      cpu    = 4.0
+      memory = "8Gi"
 
       env {
         name  = "POSTGRES_FQDN"

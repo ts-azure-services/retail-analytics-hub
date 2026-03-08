@@ -1,12 +1,13 @@
 """
-Import NDJSON files into Azure Cosmos DB.
+Import NDJSON files into Azure Cosmos DB using concurrent upserts.
 
-Downloads NDJSON from blob, parses each line, and upserts into the
-corresponding Cosmos DB container.
+Downloads NDJSON from blob, parses all lines, and upserts into the
+corresponding Cosmos DB container using a thread pool for throughput.
 """
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from azure.cosmos import CosmosClient, PartitionKey
 
@@ -24,10 +25,12 @@ PARTITION_KEYS = {
 }
 DEFAULT_PARTITION_KEY = "/id"
 
+# Concurrent upsert threads
+MAX_WORKERS = 20
+
 
 def import_container(blob_name: str, blob_data: bytes, credential) -> None:
     """Import an NDJSON file into a Cosmos DB container."""
-    # e.g. "Customers.ndjson" -> "Customers"
     container_name = blob_name.rsplit(".", 1)[0]
 
     client = CosmosClient(url=COSMOSDB_ENDPOINT, credential=credential)
@@ -40,23 +43,38 @@ def import_container(blob_name: str, blob_data: bytes, credential) -> None:
     )
 
     lines = blob_data.decode("utf-8").strip().split("\n")
+    docs = [json.loads(line) for line in lines if line.strip()]
+    total = len(docs)
+
+    if total == 0:
+        print(f"    {container_name}: empty, skipping")
+        return
+
+    print(f"    {container_name}: {total:,} docs to upsert ({MAX_WORKERS} threads)")
+
     success = 0
     errors = 0
+    error_samples = []
 
-    for line in lines:
-        if not line.strip():
-            continue
-        doc = json.loads(line)
-        try:
-            container.upsert_item(doc)
-            success += 1
-        except Exception as e:
-            errors += 1
-            if errors <= 5:
-                print(f"    {container_name}: upsert error - {e}")
-            if errors == 6:
-                print(f"    {container_name}: (suppressing further errors)")
+    def _upsert(doc):
+        container.upsert_item(doc)
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(_upsert, doc): doc for doc in docs}
+        done_count = 0
+        for future in as_completed(futures):
+            done_count += 1
+            try:
+                future.result()
+                success += 1
+            except Exception as e:
+                errors += 1
+                if len(error_samples) < 3:
+                    error_samples.append(str(e)[:200])
+
+            if done_count % 10000 == 0:
+                print(f"    {container_name}: {done_count:,}/{total:,} processed")
 
     print(f"    {container_name}: {success:,} upserted, {errors} errors")
-    if success == 0 and errors > 0:
-        print(f"    {container_name}: WARNING - all upserts failed, check partition key and document structure")
+    for sample in error_samples:
+        print(f"      error: {sample}")

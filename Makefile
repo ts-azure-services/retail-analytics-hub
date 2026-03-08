@@ -732,6 +732,312 @@ delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purg
 	@echo ""
 	@echo "\033[0;32m✅ Local infrastructure deleted and purged!\033[0m"
 
+# =============================================================================
+##@ Fabric Integration
+# =============================================================================
+
+check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
+	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
+	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	echo "🔍 Current IP: $$CURRENT_IP"; \
+	echo "📡 Server: $$SERVER"; \
+	echo ""; \
+	FOUND=$$(az postgres flexible-server firewall-rule list --resource-group $$RG --name $$SERVER --query "[?startIpAddress=='$$CURRENT_IP'].name" -o tsv); \
+	if [ -n "$$FOUND" ]; then \
+		echo "\033[0;32m✓ Your IP $$CURRENT_IP is in the firewall allow list (Rule: $$FOUND)\033[0m"; \
+	else \
+		echo "\033[0;31m✗ Your IP $$CURRENT_IP is NOT in the firewall allow list\033[0m"; \
+		echo "\033[0;33m💡 Run 'make add-pg-firewall' to add it\033[0m"; \
+	fi
+
+add-pg-firewall: ## [util] Add your current IP to PostgreSQL firewall
+	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
+	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	az postgres flexible-server firewall-rule create \
+		--resource-group $$RG --name $$SERVER \
+		--rule-name "AllowMyIP" --start-ip-address $$CURRENT_IP --end-ip-address $$CURRENT_IP
+
+setup-cosmos-mirror: ## [core] ⑧ Setup Cosmos DB mirroring to Fabric (manual operation mainly in Fabric)
+	@echo "=========================================="
+	@echo "Setting up Microsoft Fabric Mirroring for Cosmos DB"
+	@echo "=========================================="
+	@echo "Source reference: https://learn.microsoft.com/en-us/fabric/mirroring/azure-cosmos-db-tutorial"
+	@echo "MANUAL STEP: Create Mirrored Database in Fabric"
+	@echo "- In your Fabric workspace, click '+ New'"
+	@echo "- Search for 'Mirrored Azure Cosmos DB'"
+	@echo "- Click 'Mirrored Azure Cosmos DB' (under Data Engineering)"
+	@echo "- Select the Azure CosmosDB v2 'New source' and enter Connection details."
+	@echo ""
+	@echo "In the Fabric mirroring wizard:"
+	@echo "  1. Connection settings:"
+	@echo "     - Connection: Create new connection"
+	@echo "     - Account endpoint: [reference the endpoint in the .env file]"
+	@echo "     - Account key: [reference the account key in the .env file]"
+	@echo "     - Hit Connect."
+	@echo "  2. Select database to mirror"
+	@echo "  3. Select containers (tables) to replicate"
+	@echo "  4. Write destination name, e.g. 'cosmos-mirror'."
+	@echo "  5. Click 'Create mirrored database.'"
+	@echo ""
+	@echo "MANUAL STEP : Configure Networking (if needed)"
+	@echo "If connection fails, configure Cosmos DB firewall:"
+	@COSMOS_ACCOUNT=$$(az cosmosdb list --query "[?contains(name, 'cosmos')].name" -o tsv | head -1); \
+	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	echo "  az cosmosdb update --name $$COSMOS_ACCOUNT --resource-group $$RG --enable-public-network true"; \
+	echo "Or add specific Fabric service IPs to firewall rules"
+	@echo ""
+	@echo "Then, create a shortcut to this data in the Lakehouse. Source: OneLake. Select individual containers (so it comes in as tables)."
+
+validate-postgres-admin: ## [util] Validate PostgreSQL admin user has required permissions
+	@echo "=========================================="
+	@echo "Validating PostgreSQL Admin Permissions"
+	@echo "=========================================="
+	@if [ ! -f infra/.env ]; then \
+		echo "❌ infra/.env file not found. Run 'make tf' first"; \
+		exit 1; \
+	fi
+	@RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv 2>/dev/null | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv 2>/dev/null); \
+	ADMIN=$$(az postgres flexible-server show --resource-group $$RG --name $$SERVER --query administratorLogin -o tsv 2>/dev/null); \
+	DATABASE=$$(grep POSTGRES_DB_NAME infra/.env | cut -d '=' -f2- | tr -d '\n' | tr -d '\r' | tr -d '"' | tr -d "'"); \
+	PASSWORD=$$(grep POSTGRES_ADMIN_PASSWORD infra/.env | cut -d '=' -f2- | tr -d '\n' | tr -d '\r' | tr -d '"' | tr -d "'"); \
+	echo "Server: $$SERVER"; \
+	echo "Admin User: $$ADMIN"; \
+	echo "Database: $$DATABASE"; \
+	echo "✓ Password loaded from infra/.env"; \
+	echo ""; \
+	echo "Testing connection and checking role membership..."; \
+	echo ""; \
+	export PGPASSWORD="$$PASSWORD"; \
+	export PAGER=cat; \
+	psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -c "\
+		SELECT \
+			current_user as connected_as, \
+			CASE WHEN pg_has_role(current_user, 'azure_pg_admin', 'member') \
+				THEN '✓ YES - Has azure_pg_admin role' \
+				ELSE '✗ NO - Missing azure_pg_admin role' \
+			END as has_required_role, \
+			(SELECT string_agg(rolname, ', ') FROM pg_roles WHERE pg_has_role(current_user, oid, 'member')) as all_roles;" \
+		|| { \
+			echo ""; \
+			echo "❌ Connection failed. Possible issues:"; \
+			echo "   - Firewall blocking connection (run: make check-pg-firewall)"; \
+			echo "   - Wrong password in .env"; \
+			echo "   - SSL/TLS certificate issue"; \
+			echo ""; \
+			echo "Debug: Try manual connection with:"; \
+			echo "  PGPASSWORD='[from .env]' psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -c 'SELECT current_user;'"; \
+			exit 1; \
+		}
+	@echo ""
+
+
+
+setup-postgres-mirror: ## [core] ⑧ Setup PostgreSQL mirroring to Fabric (manual operations)
+	@echo "=========================================="
+	@echo "Setting up Microsoft Fabric Mirroring for PostgreSQL"
+	@echo "=========================================="
+	@echo ""
+	@echo "Manually configure the mirroring in the Azure Portal from the Postgres blade."
+	@echo "As part of this process, a server restart will also be initiated."
+	@echo ""
+	@echo "STEP 2: Configure PostgreSQL Networking"
+	@RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	echo "Checking firewall rules for $$SERVER..."; \
+	RULES=$$(az postgres flexible-server firewall-rule list --resource-group $$RG --name $$SERVER --query "length([?contains(name, 'AllowAllAzure')])" -o tsv); \
+	if [ "$$RULES" = "0" ]; then \
+		echo "Adding firewall rule to allow Azure services..."; \
+		az postgres flexible-server firewall-rule create --resource-group $$RG --name $$SERVER \
+			--rule-name AllowAllAzureServicesAndResourcesWithinAzureIps \
+			--start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0 --output none; \
+		echo "✓ Firewall rule added"; \
+	else \
+		echo "✓ Azure services already have access"; \
+	fi
+	@echo ""
+	@read -p "Create Fabric PostgreSQL user for mirroring? (y/N): " confirm; \
+	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+		$(MAKE) create-fabric-postgres-user; \
+	else \
+		echo "⏭ Skipping Fabric PostgreSQL user creation"; \
+	fi
+	@echo ""
+	@echo "MANUAL STEP 3: Create Mirrored Database in Fabric"
+	@echo "- In your Fabric workspace, click '+ New'"
+	@echo "- Search for 'Mirrored Azure Database for PostgreSQL (preview)'"
+	@echo "- Click 'Mirrored Azure Database for PostgreSQL' (under Data Engineering)"
+	@echo "- Name: 'postgres-mirror-cdp'"
+	@echo "- Click 'Create'"
+	@echo ""
+	@echo "In the Fabric mirroring wizard:"
+	@echo "  1. Connection settings:"
+	@echo "     - Server: [from .env above]"
+	@echo "     - Database: [from .env above]"
+	@echo "     - Authentication kind: Basic"
+	@echo "     - Username: [admin user from above]"
+	@echo "     - Password: [from .env or Key Vault]"
+	@echo "     - Encrypt connection: Yes"
+	@echo "     - Test connection"
+	@echo "  2. Select tables from 'public' schema"
+	@echo "  3. Click Connect."
+	@echo "  4. Specify the Destination name: 'postgres-mirror'."
+	@echo "  5. Click 'Create mirrored database'."
+	@echo ""
+	@echo "Then, create a shortcut to this data in the Lakehouse. Source: OneLake. Select individual tables (so it comes in as tables)."
+
+create-fabric-postgres-user: ## [util] Create fabric_user with replication privileges and table ownership
+	@echo "=========================================="
+	@echo "Creating Fabric Replication User"
+	@echo "=========================================="
+	@if [ ! -f infra/.env ]; then \
+		echo "❌ infra/.env file not found. Run 'make tf' first"; \
+		exit 1; \
+	fi
+	@RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv 2>/dev/null | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv 2>/dev/null); \
+	ADMIN=$$(az postgres flexible-server show --resource-group $$RG --name $$SERVER --query administratorLogin -o tsv 2>/dev/null); \
+	DATABASE=$$(grep POSTGRES_DB_NAME infra/.env | cut -d '=' -f2- | tr -d '\n' | tr -d '\r' | tr -d '"' | tr -d "'"); \
+	PASSWORD=$$(grep POSTGRES_ADMIN_PASSWORD infra/.env | cut -d '=' -f2- | tr -d '\n' | tr -d '\r' | tr -d '"' | tr -d "'"); \
+	echo "Server: $$SERVER"; \
+	echo "Admin User: $$ADMIN"; \
+	echo "Database: $$DATABASE"; \
+	echo ""; \
+	echo "Step 1: Creating fabric_user role..."; \
+	export PGPASSWORD="$$PASSWORD"; \
+	export PAGER=cat; \
+	psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -c "\
+		DO \$$\$$ \
+		BEGIN \
+			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'fabric_user') THEN \
+				CREATE ROLE fabric_user CREATEDB CREATEROLE LOGIN REPLICATION PASSWORD '$$PASSWORD'; \
+				RAISE NOTICE 'Created fabric_user'; \
+			ELSE \
+				RAISE NOTICE 'fabric_user already exists'; \
+			END IF; \
+		END \$$\$$;" || { echo "❌ Failed to create fabric_user"; exit 1; }; \
+	echo "✓ fabric_user created/verified"; \
+	echo ""; \
+	echo "Step 2: Granting azure_cdc_admin role..."; \
+	psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -c "\
+		GRANT azure_cdc_admin TO fabric_user;" || { echo "❌ Failed to grant azure_cdc_admin"; exit 1; }; \
+	echo "✓ azure_cdc_admin role granted"; \
+	echo ""; \
+	echo "Step 3: Granting CREATE on database..."; \
+	psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -c "\
+		GRANT CREATE ON DATABASE $$DATABASE TO fabric_user;" || { echo "❌ Failed to grant CREATE"; exit 1; }; \
+	echo "✓ CREATE permission granted"; \
+	echo ""; \
+	echo "Step 4: Granting privileges on public schema..."; \
+	psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -c "\
+		GRANT ALL PRIVILEGES ON SCHEMA public TO fabric_user; \
+		GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO fabric_user; \
+		GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO fabric_user; \
+		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO fabric_user; \
+		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO fabric_user;" || { echo "❌ Failed to grant schema privileges"; exit 1; }; \
+	echo "✓ Schema privileges granted"; \
+	echo ""; \
+	echo "Step 5: Getting list of tables and changing ownership..."; \
+	TABLES=$$(psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -t -c "\
+		SELECT tablename FROM pg_tables WHERE schemaname = 'public';" | tr -d ' ' | grep -v '^$$'); \
+	if [ -z "$$TABLES" ]; then \
+		echo "⚠️  No tables found in public schema"; \
+	else \
+		echo "Found tables:"; \
+		echo "$$TABLES" | while read table; do \
+			if [ -n "$$table" ]; then \
+				echo "  - $$table"; \
+			fi; \
+		done; \
+		echo ""; \
+		echo "Changing ownership to fabric_user..."; \
+		echo "$$TABLES" | while read table; do \
+			if [ -n "$$table" ]; then \
+				psql -h $$SERVER.postgres.database.azure.com -U $$ADMIN -d $$DATABASE -w --pset=pager=off -c "\
+					ALTER TABLE public.$$table OWNER TO fabric_user;" && echo "  ✓ $$table"; \
+			fi; \
+		done; \
+		echo ""; \
+		echo "✓ All table ownerships transferred"; \
+	fi
+	@echo ""
+	@echo "=========================================="
+	@echo "✓ Fabric User Setup Complete"
+	@echo "=========================================="
+	@echo ""
+	@echo "User: fabric_user"
+	@echo "Password: [same as PostgreSQL admin]"
+	@echo "Roles: azure_cdc_admin, CREATEDB, CREATEROLE, LOGIN, REPLICATION"
+	@echo ""
+	@echo "Use this user when configuring Fabric mirroring connection."
+
+
+restart-postgres: ## [util] Restart PostgreSQL server (required after CDC parameter changes)
+	@echo "Restarting PostgreSQL server..."
+	@RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	az postgres flexible-server restart --resource-group $$RG --name $$SERVER --no-wait
+	@echo "✓ Restart initiated (runs in background)"
+	@echo "⏳ Wait 2-5 minutes before continuing mirroring setup"
+
+
+create-shortcuts: ## [core] ⑨ Create shortcuts to mirrored CosmosDB & Postgres
+	@echo ""
+	@echo "=========================================="
+	@echo "🔗 Creating Lakehouse Shortcuts"
+	@echo "=========================================="
+	@echo ""
+	@echo "MANUAL STEP: Create shortcuts in the pre-created Lakehouse"
+	@echo ""
+	@echo "For CosmosDB Mirror:"
+	@echo "  1. In Lakehouse, click '+ New' → 'Shortcut'"
+	@echo "  2. Source: Microsoft OneLake"
+	@echo "  3. Navigate to: cosmos-mirror database"
+	@echo "  4. Select individual containers (they will appear as tables)"
+	@echo "  5. Click 'Create'"
+	@echo ""
+	@echo "For PostgreSQL Mirror:"
+	@echo "  1. In Lakehouse, click '+ New' → 'Shortcut'"
+	@echo "  2. Source: Microsoft OneLake"
+	@echo "  3. Navigate to: postgres-mirror database"
+	@echo "  4. Select individual tables"
+	@echo "  5. Click 'Create'"
+	@echo ""
+	@echo "=========================================="
+	@echo "✓ Shortcuts provide unified access to all data"
+	@echo "=========================================="
+	@echo ""
+
+
+
+
+
+# =============================================================================
+##@ Fabric Administration
+# =============================================================================
+create-lakehouse: ## [core] ③  Create Fabric Lakehouse for analytics
+	@echo "🏠 Creating Fabric Lakehouse..."
+	./fabric-admin-scripts/create-fabric-lakehouse.sh
+
+delete-onelake-force: ## [util] 🗑️  Purge all OneLake data without confirmation
+	@chmod +x fabric-admin-scripts/purge-onelake.sh
+	@./fabric-admin-scripts/purge-onelake.sh --force
+
+suspend-fabric: ## [util] Suspend Fabric Capacity to save costs
+	./fabric-admin-scripts/manage-fabric-capacity.sh suspend
+
+resume-fabric: ## [util] Resume Fabric Capacity for active use
+	./fabric-admin-scripts/manage-fabric-capacity.sh resume
+
+update-fabric-sku: ## [util] Update Fabric Capacity SKU (usage: make update-fabric-sku SKU=F16)
+	@if [ -z "$(SKU)" ]; then \
+		echo "Error: SKU parameter required. Usage: make update-fabric-sku SKU=F16"; \
+		exit 1; \
+	fi
+	./fabric-admin-scripts/manage-fabric-capacity.sh update $(SKU)
+
 
 ##@ Help
 help: ## [util] Show this help message

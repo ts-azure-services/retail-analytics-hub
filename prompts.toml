@@ -305,3 +305,64 @@ Constraints:
 - Verify tab names and metric IDs against App.tsx and metric-registry.ts
 - Cross-reference agents from the docker-compose.yml port assignments
 """
+
+[testing-docs]
+prompt = """
+Generate docs/testing.md as a prescriptive testing spec for the retail simulation framework. No tests exist yet — this document defines what to build. Structure:
+
+1. **Approach** — One paragraph: tests validate structural correctness (right tables populated, correct columns, expected types, error paths). Stochastic simulation output is asserted on shape and constraints, not exact values. Uses pytest + pytest-asyncio.
+
+2. **Prerequisites** — Show the pytest dependency to add to pyproject.toml under [project.optional-dependencies]. Include a directory tree for `tests/` with sub-directories: simulation/, sweep/, ml/, agents/, sync/, seed/, analysis/.
+
+3. **Test Categories** — Table with columns: Category, Scope, When to Run. Cover: Unit (individual functions, every commit), Integration (end-to-end flows, pre-merge), Contract (API schemas and MCP tool I/O, every commit), Smoke (agent /health endpoints, post-deploy).
+
+4. **Simulation Core** — Four sub-sections, each as a table with columns Test, What to Assert:
+   - Configuration (test_config.py): default construction, override loading (valid/missing/malformed JSON), _apply_overrides (unknown section, unknown field), validate() under USE_LOCAL_DB true/false.
+   - Local Backend (test_local_backend.py): table creation (all 10 ML tables), sequence creation (all 6 sequences), sequence reset on existing data, write_order/write_order_items/write_payment return values, update_inventory, _decimal_to_float with nested structures.
+   - Metrics Collector (test_metrics.py): empty state (no division by zero), full journey, abandonment, payment failure, mixed journeys, order metrics with returns, unknown customer/order, record_metric increment, persist_to_db writes, export_to_dict.
+   - Run Simulation (test_run_simulation.py): default CLI args, invalid workflow, sweep mode dispatch, setup validation failure, quick structural simulation run.
+
+5. **Workflows** (test_workflows.py) — Integration tests using seeded temp DuckDB, minimal duration (0.1 hours). Table covering: omnichannel completes, omnichannel empty catalog, inventory completes, engagement completes, all workflows together.
+
+6. **Parameter Sweeps** — Three sub-sections:
+   - Config Generator (test_config_generator.py): total_scenarios calculation, empty params, grid enumeration, pre-built sweep counts (CONVERSION_SWEEP == 36).
+   - Scenario Tracker (test_scenario_tracker.py): table creation, start_scenario, complete_scenario per workflow type (different KPI columns), fail_scenario, get_sweep_summary, upsert behavior.
+   - Sweep Runner (test_sweep_runner.py): SWEEP_WORKFLOW_MAP coverage, single scenario execution, scenario isolation (fresh simpy.Environment), exception handling (continues to next), run return value.
+
+7. **ML Pipeline** (test_data_prep.py) — Tests for DataExtractor: each get_*_dataset method returns DataFrame with expected columns, empty table handling, channel filter on demand forecast, scenario_id filtering, _get_connection reuse.
+
+8. **Agent System** — Five sub-sections:
+   - Database Layer (test_db.py): _connect valid/missing path, execute_query basic/row limit injection/existing LIMIT/existing TOP/error, backend routing.
+   - MCP Tools (test_mcp_tools.py): call_tool unknown name, call_tool handler raises, get_tool_registry singleton, TAB_TOOL_MAP completeness (all keys have summary/drivers/extra), TAB_TOOL_MAP tools exist in registry.
+   - Agent 1 Executors (test_agent1_executors.py): prepare_input parsing, gather_data with valid intent/parse failure/unknown tab/tool error propagation, extract_output passthrough. Mock call_tool.
+   - Agent 3 Executors (test_agent3_executors.py): _parse_json (raw/fenced/invalid), fetch_review, adapt_classification valid/failure defaults, persist_results with/without review_id. Mock db.update_review_result.
+   - Agent 3 API (test_agent3_main.py): POST /analyze success/exception, POST /retry aggregation, GET /health. Use httpx.AsyncClient with TestClient, mock analyze_review.
+
+9. **Sync Pipeline** — Two sub-sections:
+   - Export (test_export_postgres.py): normal export creates Parquet per table, contents match source, empty DB, read-only connection.
+   - Upload (test_upload.py): missing connection string exits, invalid --only exits, normal upload calls upload_blob with overwrite=True, --only filters, empty staging. Mock BlobServiceClient.
+
+10. **Seed Data** (test_seed_local.py) — Generator function output (correct count, required keys), seed_postgres_db creates tables and populates, --clean deletes files, DDL idempotency, sequence alignment with local_backend.py (seed IDs < 10000, sequences start at 10000).
+
+11. **Dashboard API** — Node.js tests: GET /api/health, GET /api/metrics/main, GET /api/metrics/invalid-tab returns 400, GET /api/reviews with filter, POST /api/agent1/chat with agent down returns 502, proxy timeout.
+
+12. **Analysis Tools** — Two sub-sections:
+   - Sweep Recommend (test_sweep_recommend.py): volume/variety scoring, missing tables default to 0, PARAM_SECTION_MAP completeness, output format.
+   - Config Applier (test_config_applier.py): preview vs apply mode (no write vs write), workflow filter, range midpoint calculation, get_current_defaults keys.
+
+13. **Fixture Strategy** — Three sub-sections:
+   - Temp Databases: pytest tmp_path fixtures with ephemeral DuckDB files. Include a code example showing a seeded_postgres_db fixture. Emphasize: no test reads from or writes to real repo-root .duckdb files.
+   - Minimal Seed Data: table mapping entity to test count vs production count (customers 5/500, products 5/50, suppliers 3/50, inventory 25/250, orders 5/500).
+   - Mock External Services: table mapping dependency to mock strategy (Azure OpenAI → mock ChatAgent, Blob Storage → mock BlobServiceClient, CosmosDB/PostgreSQL → use DuckDB, MCP Server → mock call_tool).
+
+14. **Stochastic Output Handling** — Four strategies: fixed seeds (seed 42), structural assertions (shape not values), bound checks (score ranges, positive integers, IDs >= 10000), deterministic sub-components (config parsing, JSON serialization, SQL generation, safety rules get exact assertions).
+
+Constraints:
+- This is a spec for tests to build, not documentation of existing tests
+- Every test table must reference the actual function/class/method names from the codebase
+- Verify function signatures, dataclass names, table names, and sequence names against the source code
+- Include the pytest dependency addition to pyproject.toml
+- No Makefile commands or usage instructions
+- Code examples limited to fixture patterns (seeded_postgres_db, mock_sentiment_response)
+- Use markdown tables for test listings, code blocks only for fixture examples and directory structure
+"""

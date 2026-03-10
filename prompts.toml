@@ -198,6 +198,55 @@ Constraints:
 - No Makefile commands or usage instructions
 - Prefer markdown tables over prose for metric listings
 - Use SQL code blocks only for computation examples in the High-Level section; workflow-specific sections should use formula shorthand in tables
+"""
+
+[agents-docs]
+prompt = """
+Generate docs/agents.md documenting the multi-agent architecture. Structure:
+
+1. **Introduction** — One paragraph: three AI agents provide on-demand analysis of simulation data. Each agent is a standalone FastAPI service running in Docker, backed by Azure OpenAI. Agents consume data via an MCP (Model Context Protocol) tool server or direct DuckDB access.
+
+2. **Shared Infrastructure** — Table with columns: Module, Role. Cover the four modules in agents/shared/: config.py (Pydantic settings, singleton via @lru_cache), models.py (Pydantic data contracts — IntentResult, NarrativeResponse, ReviewResponse — plus shared enums TabId, QuestionType, DecisionDomain), db.py (dual-backend database abstraction — DuckDB local, Fabric SQL cloud — with execute_query() enforcing row limits and timeouts), mcp_tools.py (lazy-loaded MCP tool registry, call_tool(name, **kwargs), TAB_TOOL_MAP mapping dashboard tabs to summary/driver/extra tools).
+
+3. **MCP Server** — One paragraph covering: protocol (Model Context Protocol over stdio), deployment (spawned as subprocess by Agents 1 and 2), tool modules (seven: main_tab, omnichannel_tab, engagement_tab, inventory_tab, reviews_tab, timeseries, aggregated), API surface (list_tools(), call_tool()), purpose (decouples agents from raw SQL with versioned, pre-defined queries).
+
+4. **Agent 1 — Dashboard Explainer** — Sub-sections:
+   - Purpose: answers specific questions about individual metrics on a single dashboard tab. Port 8001, model gpt-4o-mini (temperature 0.3).
+   - API Endpoints: table (POST /chat, GET /health).
+   - Workflow Steps: ASCII flowchart showing 6 steps — PREPARE_INPUT (executor: packages message/tab/view/metric), INTENT_CLASSIFIER (ChatAgent: determines tab, metric_ids, question_type), GATHER_DATA (executor: uses TAB_TOOL_MAP to call MCP summary/driver/extra tools), DATA_ANALYZER (ChatAgent: synthesizes data into narrative), RESPONSE_FORMATTER (ChatAgent: produces headline + ~150-word explanation + actionable insight), EXTRACT_OUTPUT (executor: pass-through). Each box should include bullet points describing what happens.
+   - Design Patterns Showcased: table with columns Pattern, Detail. Cover: Sequential Pipeline Orchestration (WorkflowBuilder chains steps deterministically), Agent Specialization (three separate ChatAgent instances with focused prompts), MCP Tool Calling (data via call_tool not raw SQL), Structured I/O (JSON parsed into Pydantic models), Executor Pattern (@executor-decorated functions with WorkflowContext), Module-Level Shared State (_context dict carries tab/message info between executors).
+
+5. **Agent 2 — Business Narrative** — Sub-sections:
+   - Purpose: generates comprehensive cross-functional business narratives with deep reasoning. Port 8002, models gpt-4o-mini (intent, formatting) + reasoning model (analysis, deep reasoning).
+   - API Endpoints: table (POST /narrative, POST /chat, GET /health).
+   - Workflow Steps: ASCII flowchart showing 7 steps — PREPARE_INPUT (two modes: narrative for executive cross-tab, chat for interactive follow-up), INTENT_CLASSIFIER (ChatAgent: determines decision_domain, time_horizon, urgency, sub_questions, tabs_to_query), GATHER_DATA (executor: broader than Agent 1 — summary + extras for ALL tabs_to_query, cross-tab health check, timeseries, correlation analysis), DATA_ANALYZER (reasoning model: synthesizes multi-tab data), DEEP_REASONER (reasoning model: causal chains a→b→c, root cause analysis, prioritized recommendations, risk flags), NARRATIVE_FORMATTER (ChatAgent: executive briefing ~400 words with Executive Summary, Key Findings, Recommendations, Risk Flags), EXTRACT_OUTPUT (executor: parses into structured NarrativeResponse sections).
+   - Design Patterns Showcased: table covering Hierarchical Reasoning (three-tier LLM chain: Analyzer → Deep Reasoner → Formatter), Model Specialization (reasoning models for analysis, lightweight for classification/formatting), Cross-Functional Scope (multi-tab data gathering vs Agent 1's single-tab focus), Dual Execution Modes (narrative vs chat prompt branching), Causal Chain Prompting (explicit a→b→c chains and root-cause), Structured Section Output (Pydantic sections: findings, recommendations, risks).
+
+6. **Agent 3 — Customer Sentiment Analysis** — Sub-sections:
+   - Purpose: analyzes customer reviews for sentiment and routes to chatbot response or human escalation. Includes persistent DB tracking and background retry. Port 8003, model gpt-4o-mini.
+   - API Endpoints: table (POST /analyze, POST /retry, GET /health).
+   - Workflow Steps: ASCII flowchart showing 5 steps — FETCH_REVIEW (executor: receives review_id and review_text), SENTIMENT_CLASSIFIER (ChatAgent: classifies very_negative/negative/neutral/positive/very_positive with score -1.0 to 1.0, key_phrases, confidence), ADAPT_CLASSIFICATION (executor: parses and packages for responder), RESPONDER (ChatAgent: deterministic routing — very_negative→human review, negative+defect→human, negative+general→empathetic reply, neutral→thank-you, positive→cheerful response; override rules for refunds/health/contamination/foreign objects), PERSIST_RESULTS (executor: writes to customer_reviews table).
+   - Background Retry Loop: async task at 10-minute intervals, queries incomplete reviews with retry_count < 3, re-runs full workflow, increments retry_count on failure.
+   - Database Schema: customer_reviews table DDL (id, review_text, sentiment_category, sentiment_score, status, chatbot_statement, created_at, processed_at, error_message, retry_count, last_retry_at).
+   - Design Patterns Showcased: table covering Hybrid Classification (LLM sentiment + deterministic routing), Database Persistence (audit trail in customer_reviews), Background Retry Loop (lifespan-managed async, max 3 attempts), Status State Machine (To be processed → processed/Needing human review/incomplete), Safety Override Rules (hard-coded escalation for sensitive topics), Lifespan Management (FastAPI lifespan initializes DB and starts background task).
+
+7. **Inter-Agent Communication** — ASCII diagram showing Dashboard → three agents → MCP Server → Database. Bullet points: Dashboard→Agents is HTTP REST JSON; Agents→MCP is subprocess stdio; Agent 3 writes DuckDB directly; Agents 1/2 read via MCP tools; no direct agent-to-agent communication.
+
+8. **Design Pattern Summary** — Four sub-tables organized by category:
+   - Orchestration & Workflow: Sequential Pipeline (all), Executor Pattern (all), Module-Level Context (all), Background Task (Agent 3).
+   - LLM Usage: Agent Specialization (all), Model Tiering (Agent 2), Structured JSON Output (all), Chain-of-Thought (Agent 2).
+   - Data & Tools: MCP Tool Abstraction (Agents 1, 2), Dual-Backend DB (all), Lazy Initialization (all).
+   - Resilience & Safety: Deterministic Safety Rules (Agent 3), Retry with Backoff (Agent 3), Error Wrapping (all), Health Checks (all).
+
+9. **Deployment** — Brief section: docker-compose.yml runs each agent as an independent container. Table with columns: Service, Port, Model, Key Env Vars. Cover agent1-explainer (8001, gpt-4o-mini, AGENT_TEMPERATURE=0.3), agent2-narrative (8002, reasoning model, AGENT_TEMPERATURE=0.3), agent3-sentiment (8003, gpt-4o-mini). Note: build context is parent directory for shared module access, health checks at 30s intervals, restart policy unless-stopped.
+
+Constraints:
+- No Makefile commands or usage instructions
+- No code snippets beyond the customer_reviews DDL and ASCII diagrams
+- ASCII workflow flowcharts must match the actual executor step names and WorkflowBuilder stage order from agents.py in each agent directory
+- Verify model names, port numbers, and env vars against docker-compose.yml
+- Design pattern tables should reference specific implementation details, not generic descriptions
+- Use markdown tables for structured listings, ASCII art for workflow flows and architecture diagrams
 - Cross-reference source tables from docs/data.md
 """
 

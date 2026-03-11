@@ -1051,6 +1051,52 @@ update-fabric-sku: ## [util] Update Fabric Capacity SKU (usage: make update-fabr
 ##@ Cloud Deployment
 # =============================================================================
 
+FABRIC_ACCESS_GROUP = fabric-container-apps
+
+cloud-fabric-access: ## [core] Create Entra ID security group and add container app managed identities for Fabric workspace access
+	$(eval RG := $(shell terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null))
+	$(eval DASHBOARD_APP := $(shell terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null))
+	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
+	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
+	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
+	@if [ -z "$(RG)" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi
+	@echo "============================================================"
+	@echo "Creating Entra ID security group: $(FABRIC_ACCESS_GROUP)"
+	@echo "============================================================"
+	@GROUP_ID=$$(az ad group show --group "$(FABRIC_ACCESS_GROUP)" --query id -o tsv 2>/dev/null) || true; \
+	if [ -z "$$GROUP_ID" ]; then \
+		GROUP_ID=$$(az ad group create --display-name "$(FABRIC_ACCESS_GROUP)" \
+			--mail-nickname "$(FABRIC_ACCESS_GROUP)" \
+			--security-enabled true --query id -o tsv); \
+		echo "  Created group: $$GROUP_ID"; \
+	else \
+		echo "  Group already exists: $$GROUP_ID"; \
+	fi; \
+	echo ""; \
+	echo "Adding container app managed identities to group..."; \
+	for APP in "$(DASHBOARD_APP)" "$(AGENT1_APP)" "$(AGENT2_APP)" "$(AGENT3_APP)"; do \
+		PRINCIPAL_ID=$$(az containerapp show -n "$$APP" -g "$(RG)" --query "identity.principalId" -o tsv 2>/dev/null); \
+		if [ -z "$$PRINCIPAL_ID" ]; then \
+			echo "  WARNING: Could not get principalId for $$APP"; \
+			continue; \
+		fi; \
+		az ad group member check --group "$$GROUP_ID" --member-id "$$PRINCIPAL_ID" --query value -o tsv 2>/dev/null | grep -q true && \
+			echo "  $$APP ($$PRINCIPAL_ID) — already a member" || \
+			{ az ad group member add --group "$$GROUP_ID" --member-id "$$PRINCIPAL_ID" 2>/dev/null && \
+			  echo "  $$APP ($$PRINCIPAL_ID) — added"; }; \
+	done; \
+	echo ""; \
+	echo "============================================================"; \
+	echo "Security group ready: $(FABRIC_ACCESS_GROUP) ($$GROUP_ID)"; \
+	echo ""; \
+	echo "NEXT STEP (manual):"; \
+	echo "  1. Open Fabric Portal → your workspace → Manage access"; \
+	echo "  2. Add '$(FABRIC_ACCESS_GROUP)' with Viewer role"; \
+	echo "============================================================"
+
 cloud-build: cloud-dashboard-build cloud-agents-build ## [core] Build all 4 images in ACR (no local Docker needed)
 	@echo "\033[0;32m✅ All images built in ACR!\033[0m"
 

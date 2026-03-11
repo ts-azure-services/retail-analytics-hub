@@ -1356,8 +1356,16 @@ resource "azurerm_container_app" "dashboard" {
         value = var.fabric_sql_endpoint
       }
       env {
+        name  = "FABRIC_SQL_DATABASE"
+        value = "postgres-mirror"
+      }
+      env {
         name  = "ALLOWED_ORIGINS"
         value = "https://${local.ca_dashboard}.${azurerm_container_app_environment.env.default_domain}"
+      }
+      env {
+        name  = "AGENT1_URL"
+        value = "http://${local.ca_agent1}"
       }
       env {
         name  = "AGENT2_URL"
@@ -1419,6 +1427,10 @@ resource "azurerm_container_app" "agent1" {
         value = var.fabric_sql_endpoint
       }
       env {
+        name  = "FABRIC_SQL_DATABASE"
+        value = "postgres-mirror"
+      }
+      env {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = azurerm_cognitive_account.openai.endpoint
       }
@@ -1474,6 +1486,10 @@ resource "azurerm_container_app" "agent2" {
         value = var.fabric_sql_endpoint
       }
       env {
+        name  = "FABRIC_SQL_DATABASE"
+        value = "postgres-mirror"
+      }
+      env {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = azurerm_cognitive_account.openai.endpoint
       }
@@ -1527,6 +1543,10 @@ resource "azurerm_container_app" "agent3" {
       env {
         name  = "FABRIC_SQL_ENDPOINT"
         value = var.fabric_sql_endpoint
+      }
+      env {
+        name  = "FABRIC_SQL_DATABASE"
+        value = "postgres-mirror"
       }
       env {
         name  = "AZURE_OPENAI_ENDPOINT"
@@ -1971,6 +1991,11 @@ output "agent2_app_name" {
 output "agent3_app_name" {
   value       = azurerm_container_app.agent3.name
   description = "The name of Agent 3 (Sentiment) Container App"
+}
+
+output "fabric_sql_endpoint" {
+  value       = var.fabric_sql_endpoint
+  description = "Fabric SQL endpoint (empty if not configured)"
 }
 
 # Generate .env file for local development

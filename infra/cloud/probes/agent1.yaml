@@ -4,6 +4,15 @@ properties:
       minReplicas: 1
     containers:
       - name: agent1
+        env:
+          - name: AGENT_MODEL
+            value: gpt-4o-mini
+          - name: FABRIC_SQL_ENDPOINT
+            value: __FABRIC_SQL_ENDPOINT__
+          - name: FABRIC_SQL_DATABASE
+            value: postgres-mirror
+          - name: AZURE_OPENAI_ENDPOINT
+            value: __AZURE_OPENAI_ENDPOINT__
         probes:
           - type: Liveness
             httpGet:

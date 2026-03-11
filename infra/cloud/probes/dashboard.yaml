@@ -4,6 +4,25 @@ properties:
       minReplicas: 1
     containers:
       - name: dashboard
+        env:
+          - name: DASHBOARD_API_PORT
+            value: "3001"
+          - name: FABRIC_SQL_ENDPOINT
+            value: __FABRIC_SQL_ENDPOINT__
+          - name: FABRIC_SQL_DATABASE
+            value: postgres-mirror
+          - name: ALLOWED_ORIGINS
+            value: "*"
+          - name: AGENT1_URL
+            value: http://__AGENT1_APP__
+          - name: AGENT2_URL
+            value: http://__AGENT2_APP__
+          - name: AGENT3_URL
+            value: http://__AGENT3_APP__
+          - name: EVENT_HUBS_DB
+            value: /app/data/event_hubs.duckdb
+          - name: NODE_ENV
+            value: production
         probes:
           - type: Liveness
             httpGet:

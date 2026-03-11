@@ -1,0 +1,26 @@
+# SQL Server local dev instance
+# Developer Edition — free for development and testing only (not production).
+# Express Edition (MSSQL_PID=Express) is free even for production but limited.
+#
+# Usage:
+#   docker compose up -d
+#   python test_local_sqlserver.py
+#   docker compose down          # stops container, data preserved in volume
+#   docker compose down -v       # stops container AND deletes all data
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: local-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "DevPass#2026!"    # must meet complexity requirements
+    ports:
+      - "1433:1433"
+    # Uncomment to persist data across container restarts/removals:
+    # volumes:
+    #   - sqlserver-data:/var/opt/mssql
+
+# Uncomment if using the volume above:
+# volumes:
+#   sqlserver-data:

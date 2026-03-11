@@ -366,3 +366,50 @@ Constraints:
 - Code examples limited to fixture patterns (seeded_postgres_db, mock_sentiment_response)
 - Use markdown tables for test listings, code blocks only for fixture examples and directory structure
 """
+
+[security-checklist]
+prompt = """
+Generate docs/security-checklist.md — a comprehensive security and compliance checklist for this retail simulation platform. Derive the inventory from infra/cloud/main.tf (Terraform), infra/local/main.tf, agents/docker-compose.yml, agents/shared/config.py, agents/shared/db.py, and local.env. Structure:
+
+1. **Infrastructure Inventory** — Table with columns: Service, Resource, Current State. Cover all deployed Azure services: Microsoft Fabric (Capacity + Workspace), Cosmos DB, PostgreSQL Flexible Server, Event Hubs, Azure OpenAI, Container Apps (4 apps + 1 job), Container Registry, Key Vault, Storage Account, Log Analytics. Derive current state from the Terraform code (e.g., private endpoints conditional on `environment = prod`).
+
+2. **Network Security & Segmentation** — Three sub-sections:
+   - **2A — Private Endpoints for All Data Services**: Table with columns Item, Status, Notes. List private endpoints for Cosmos DB, PostgreSQL, Event Hub, Azure OpenAI, Key Vault, ACR. Flag any services missing private endpoints (e.g., staging Storage Account). Flag services where public access remains enabled even in prod.
+   - **2B — VNET-Integrated Container Apps**: Table covering Container App Environment VNET integration, internal load balancer for agents, external exposure of dashboard. Recommend Front Door or App Gateway with WAF for external-facing dashboard.
+   - **2C — Network Segmentation (Subnets & NSGs)**: Table listing all subnets (data tier, compute tier, integration tier, Key Vault, management). Flag missing items: Fabric private endpoint subnet, NSG flow logs, overly broad outbound Internet rules.
+
+3. **Identity & Access Management** — Three sub-sections:
+   - **3A — Managed Identities**: Table covering system-assigned MI for Container Apps, PostgreSQL, ACR pull, OpenAI access, Cosmos DB access, Event Hub access, Key Vault RBAC. Flag missing MI assignments (dashboard→Fabric SQL, agents→KV secrets, storage→sync pipeline). Flag any plaintext secrets in local.env as critical findings (AZURE_CLIENT_SECRET).
+   - **3B — Fabric Workspace Identity & Access**: Items for enabling workspace identity, trusted workspace access, capacity admin restriction, workspace RBAC roles.
+   - **3C — Conditional Access & Authentication**: Items for Entra ID Conditional Access for Fabric, PostgreSQL AD auth status, password auth review, Event Hub SAS auth review, MFA enforcement.
+
+4. **Data Protection & Governance** — Three sub-sections:
+   - **4A — Data Classification & Governance (Microsoft Purview)**: Items for registering Cosmos DB, PostgreSQL, and Fabric Lakehouse in Purview. Apply sensitivity labels to PII fields. Data lineage tracking across the full pipeline: Simulation → DuckDB → Staging Storage → Cosmos/Postgres → Fabric Mirror → OneLake. Define data retention policies.
+   - **4B — OneLake Security (Least Privilege)**: Items for workspace-level access control, item-level Lakehouse permissions, shortcut security, row-level/column-level security in Fabric SQL.
+   - **4C — Encryption & Secrets**: Items for encryption at rest (Cosmos, Postgres, Storage), Key Vault purge protection and soft delete status, customer-managed keys consideration, TLS enforcement, secrets stored in KV, Terraform state file secrets (flag local tfstate as critical).
+
+5. **Threat Protection & Monitoring** — Three sub-sections:
+   - **5A — Microsoft Defender for Cloud**: Items for enabling Defender on every resource type: Cosmos DB, PostgreSQL, Storage, Key Vault, Containers, Azure OpenAI, Resource Manager. Note none are currently enabled.
+   - **5B — Diagnostic Settings & Audit Logging**: Table showing which services have diagnostic settings (Cosmos, PostgreSQL, Event Hub, ACR = configured; Key Vault, Azure OpenAI, Storage Account, Container App Environment, Fabric = missing). Flag Log Analytics 30-day retention as insufficient for compliance. Recommend 90+ days. Add alert rules for security events.
+   - **5C — Fabric SaaS Security Features**: Items for leveraging Fabric built-in SaaS security, audit log integration, DLP policies, managed VNETs for Spark workloads.
+
+6. **Retail Compliance Requirements** — Four sub-sections:
+   - **6A — PCI DSS**: Table mapping all 12 PCI DSS requirements to this infrastructure with Status column. Cover network controls, secure configuration, stored data protection, transit encryption, malware protection (Defender for Containers), secure SDLC, need-to-know access, authentication (MFA/Conditional Access), physical access (Azure), logging, security testing, security policies.
+   - **6B — GDPR / CCPA**: Table for data inventory, lawful basis, right to erasure, data portability, retention limits, privacy impact assessment (required for AI sentiment analysis), cross-border transfer, breach notification.
+   - **6C — SOC 2 Type II**: Table mapping five trust principles (Security, Availability, Processing Integrity, Confidentiality, Privacy) to infrastructure controls with Status.
+   - **6D — Industry-Specific Retail Standards**: Table covering NRF Cybersecurity Framework, ISO 27001, state-specific privacy laws, FTC Act Section 5 (AI-generated sentiment).
+
+7. **Priority Action Items** — Three tiers:
+   - **Critical (Immediate)**: Rotate/remove plaintext secrets from local.env, migrate Terraform state to remote backend with encryption, add Key Vault diagnostic settings.
+   - **High (Before Production)**: Storage Account private endpoint, Key Vault public access disable, enable Defender for all resources, OpenAI/Storage/Container App diagnostic settings, Fabric workspace identity, extend log retention to 90+ days, disable PostgreSQL password auth, tighten NSG outbound rules.
+   - **Medium (Compliance Hardening)**: Purview deployment, OneLake least-privilege, Conditional Access for Fabric, Fabric managed VNETs, trusted workspace access, NSG flow logs, GDPR data subject rights workflows, privacy impact assessment, customer-managed keys, WAF for dashboard.
+
+Constraints:
+- Every item must reference the actual Terraform resource name, variable, or configuration from infra/cloud/main.tf
+- Status indicators: ✅ (implemented), ⚠️ (partial/review needed), ⬜ (not configured), 🔴 (critical gap)
+- Flag findings by examining actual code — do not invent gaps that don't exist
+- Cross-reference subnet CIDRs, NSG rules, role assignments, and diagnostic settings from the Terraform code
+- No Makefile commands or usage instructions
+- Use markdown tables for structured items, organize by actionable categories
+- Compliance mappings must reference specific Azure services and Terraform resources deployed in this repo
+"""

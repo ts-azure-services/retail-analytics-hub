@@ -88,6 +88,24 @@ variable "fabric_sql_endpoint" {
   default     = ""
 }
 
+variable "fabric_kql_cluster_uri" {
+  description = "Fabric KQL cluster query URI (set after RTI/Eventhouse setup)"
+  type        = string
+  default     = ""
+}
+
+variable "fabric_kql_database" {
+  description = "Fabric KQL database name (e.g. CustomerReviewsDB)"
+  type        = string
+  default     = ""
+}
+
+variable "fabric_kql_table" {
+  description = "Fabric KQL table name (e.g. CustomerReviews)"
+  type        = string
+  default     = ""
+}
+
 locals {
   is_prod      = var.environment == "prod"
   fabric_admin = var.fabric_admin_upn
@@ -1375,6 +1393,18 @@ resource "azurerm_container_app" "dashboard" {
         name  = "AGENT3_URL"
         value = "http://${local.ca_agent3}"
       }
+      env {
+        name  = "FABRIC_KQL_CLUSTER_URI"
+        value = var.fabric_kql_cluster_uri
+      }
+      env {
+        name  = "FABRIC_KQL_DATABASE"
+        value = var.fabric_kql_database
+      }
+      env {
+        name  = "FABRIC_KQL_TABLE"
+        value = var.fabric_kql_table
+      }
 
       # liveness_probe and readiness_probe added back after real image deploy
     }
@@ -1551,6 +1581,18 @@ resource "azurerm_container_app" "agent3" {
       env {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = azurerm_cognitive_account.openai.endpoint
+      }
+      env {
+        name  = "FABRIC_KQL_CLUSTER_URI"
+        value = var.fabric_kql_cluster_uri
+      }
+      env {
+        name  = "FABRIC_KQL_DATABASE"
+        value = var.fabric_kql_database
+      }
+      env {
+        name  = "FABRIC_KQL_TABLE"
+        value = var.fabric_kql_table
       }
 
       # liveness_probe and readiness_probe added back after real image deploy
@@ -1996,6 +2038,21 @@ output "agent3_app_name" {
 output "fabric_sql_endpoint" {
   value       = var.fabric_sql_endpoint
   description = "Fabric SQL endpoint (empty if not configured)"
+}
+
+output "fabric_kql_cluster_uri" {
+  value       = var.fabric_kql_cluster_uri
+  description = "Fabric KQL cluster URI (empty if not configured)"
+}
+
+output "fabric_kql_database" {
+  value       = var.fabric_kql_database
+  description = "Fabric KQL database name (empty if not configured)"
+}
+
+output "fabric_kql_table" {
+  value       = var.fabric_kql_table
+  description = "Fabric KQL table name (empty if not configured)"
 }
 
 # Generate .env file for local development

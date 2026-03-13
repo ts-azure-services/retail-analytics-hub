@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from mcp.types import Tool
 
-from agents.shared.db import get_postgres_connection, execute_query
+from agents.shared.db import get_postgres_connection, execute_query, use_mssql_dialect
 
 _METRIC_SQL = {
     "omni-arrival-rate": {
@@ -104,8 +104,13 @@ _DRIVER_SQL = {
 def _get_metrics_summary() -> dict:
     conn = get_postgres_connection()
     try:
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import get_mssql_metric_sql
+            metric_sql = get_mssql_metric_sql("omnichannel")
+        else:
+            metric_sql = _METRIC_SQL
         results = {}
-        for metric_id, meta in _METRIC_SQL.items():
+        for metric_id, meta in metric_sql.items():
             rows = execute_query(conn, meta["sql"])
             value = rows[0]["value"] if rows and "value" in rows[0] else None
             results[metric_id] = {
@@ -119,13 +124,19 @@ def _get_metrics_summary() -> dict:
 
 
 def _get_metric_drivers(metric_id: str) -> dict:
-    if metric_id not in _DRIVER_SQL:
-        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(_DRIVER_SQL.keys())}"}
+    if use_mssql_dialect():
+        from agents.mcp_server.tools.sql_variants import get_mssql_driver_sql
+        driver_sql = get_mssql_driver_sql("omnichannel")
+    else:
+        driver_sql = _DRIVER_SQL
+
+    if metric_id not in driver_sql:
+        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(driver_sql.keys())}"}
 
     conn = get_postgres_connection()
     try:
         drivers = []
-        for label, sql in _DRIVER_SQL[metric_id]:
+        for label, sql in driver_sql[metric_id]:
             rows = execute_query(conn, sql)
             drivers.append({"label": label, "data": rows})
         return {"metric_id": metric_id, "tab": "omnichannel", "drivers": drivers}
@@ -137,19 +148,23 @@ def _get_channel_comparison() -> dict:
     """Compare key metrics across channels."""
     conn = get_postgres_connection()
     try:
-        sql = """
-            SELECT
-                channel,
-                COUNT(*) AS total_journeys,
-                COUNT(CASE WHEN completed THEN 1 END) AS completed_orders,
-                COUNT(CASE WHEN completed THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0) AS conversion_rate,
-                AVG(CASE WHEN completed THEN total_amount END) AS avg_order_value,
-                AVG(total_journey_time) AS avg_journey_time,
-                COUNT(CASE WHEN abandoned THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0) AS abandonment_rate
-            FROM customer_journeys
-            GROUP BY channel
-            ORDER BY completed_orders DESC
-        """
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import _OMNI_CHANNEL_COMPARISON_SQL
+            sql = _OMNI_CHANNEL_COMPARISON_SQL
+        else:
+            sql = """
+                SELECT
+                    channel,
+                    COUNT(*) AS total_journeys,
+                    COUNT(CASE WHEN completed THEN 1 END) AS completed_orders,
+                    COUNT(CASE WHEN completed THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0) AS conversion_rate,
+                    AVG(CASE WHEN completed THEN total_amount END) AS avg_order_value,
+                    AVG(total_journey_time) AS avg_journey_time,
+                    COUNT(CASE WHEN abandoned THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0) AS abandonment_rate
+                FROM customer_journeys
+                GROUP BY channel
+                ORDER BY completed_orders DESC
+            """
         rows = execute_query(conn, sql)
         return {"comparison": rows}
     finally:

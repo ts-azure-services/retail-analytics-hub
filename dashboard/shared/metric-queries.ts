@@ -195,7 +195,7 @@ const customerReviewsQueries: MetricQuery[] = [
 ]
 
 // ---------------------------------------------------------------------------
-// Lookup
+// Lookup (Postgres/DuckDB — local development)
 // ---------------------------------------------------------------------------
 
 const tabQueries: Record<TabId, MetricQuery[]> = {
@@ -206,8 +206,26 @@ const tabQueries: Record<TabId, MetricQuery[]> = {
   'customer-reviews': customerReviewsQueries,
 }
 
-export function getQueriesForTab(tabId: string): MetricQuery[] {
-  return tabQueries[tabId as TabId] ?? []
+export type SqlDialect = 'postgres' | 'mssql'
+
+/**
+ * Return metric queries for a tab.
+ *
+ * When dialect is 'mssql', dynamically loads the MSSQL variant
+ * (metric-queries-mssql.ts).  Customer-reviews tab always returns
+ * the Postgres/DuckDB queries here — in cloud mode the caller
+ * should use KQL instead of SQL for that tab.
+ */
+export function getQueriesForTab(tabId: string, dialect: SqlDialect = 'postgres'): MetricQuery[] {
+  if (dialect === 'postgres') {
+    return tabQueries[tabId as TabId] ?? []
+  }
+  // MSSQL dialect — customer-reviews not available (uses KQL in cloud)
+  if (tabId === 'customer-reviews') return []
+  // Lazy-import avoids loading MSSQL module when not needed
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getMssqlQueriesForTab } = require('./metric-queries-mssql.js')
+  return getMssqlQueriesForTab(tabId)
 }
 
 export const validTabIds: TabId[] = ['main', 'omnichannel', 'customer-engagement', 'inventory-replenishment', 'customer-reviews']

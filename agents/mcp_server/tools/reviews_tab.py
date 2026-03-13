@@ -2,14 +2,17 @@
 
 Metrics: avg sentiment score, sentiment distribution, review volume,
          processing status, response rate
-Table: customer_reviews (in event_hubs.duckdb)
+Table: customer_reviews (in event_hubs.duckdb locally, KQL in cloud)
 """
 
 from __future__ import annotations
 
 from mcp.types import Tool
 
-from agents.shared.db import get_reviews_connection, execute_query
+from agents.shared.config import get_settings
+from agents.shared.db import get_reviews_connection, execute_query, execute_kql_query
+
+# ── SQL queries (Postgres/DuckDB — local) ─────────────────────────
 
 _METRIC_SQL = {
     "cr-avg-sentiment": {
@@ -65,8 +68,78 @@ _DRIVER_SQL = {
     ],
 }
 
+# ── KQL queries (Fabric Real-Time Intelligence — cloud) ──────────
+
+
+def _kql_table() -> str:
+    return get_settings().fabric_kql_table or "CustomerReviews"
+
+
+_METRIC_KQL = {
+    "cr-avg-sentiment": {
+        "label": "Average Sentiment Score",
+        "kql": lambda t: f"{t} | where isnotnull(sentiment_score) | summarize value = avg(sentiment_score)",
+        "format": "number",
+    },
+    "cr-review-volume": {
+        "label": "Total Reviews",
+        "kql": lambda t: f"{t} | count | project value = Count",
+        "format": "number",
+    },
+    "cr-positive-rate": {
+        "label": "Positive Review Rate",
+        "kql": lambda t: f"{t} | summarize total = count(), pos = countif(sentiment_category in ('positive', 'very_positive')) | project value = pos * 100.0 / total",
+        "format": "percentage",
+    },
+    "cr-negative-rate": {
+        "label": "Negative Review Rate",
+        "kql": lambda t: f"{t} | summarize total = count(), neg = countif(sentiment_category in ('negative', 'very_negative')) | project value = neg * 100.0 / total",
+        "format": "percentage",
+    },
+    "cr-response-rate": {
+        "label": "Chatbot Response Rate",
+        "kql": lambda t: f"{t} | summarize total = count(), responded = countif(isnotnull(chatbot_statement)) | project value = responded * 100.0 / total",
+        "format": "percentage",
+    },
+}
+
+_DRIVER_KQL = {
+    "cr-avg-sentiment": [
+        ("Sentiment Distribution", lambda t: f"{t} | summarize count = count(), avg_score = avg(sentiment_score) by sentiment_category | order by avg_score desc"),
+        ("Lowest Scored Reviews", lambda t: f"{t} | where isnotnull(sentiment_score) | top 5 by sentiment_score asc | project id, review_text, sentiment_score, sentiment_category"),
+    ],
+    "cr-review-volume": [
+        ("Reviews by Status", lambda t: f"{t} | summarize count = count() by status | order by count desc"),
+        ("Reviews by Sentiment", lambda t: f"{t} | summarize count = count() by sentiment_category | order by count desc"),
+    ],
+    "cr-positive-rate": [
+        ("Positive Reviews Detail", lambda t: f"{t} | where sentiment_category in ('positive', 'very_positive') | top 5 by sentiment_score desc | project id, review_text, sentiment_score"),
+        ("Sentiment Distribution", lambda t: f"{t} | summarize count = count() by sentiment_category | order by count desc"),
+    ],
+    "cr-negative-rate": [
+        ("Negative Reviews Detail", lambda t: f"{t} | where sentiment_category in ('negative', 'very_negative') | top 5 by sentiment_score asc | project id, review_text, sentiment_score"),
+        ("Unresolved Negative Reviews", lambda t: f"{t} | where sentiment_category in ('negative', 'very_negative') and isnull(chatbot_statement) | order by sentiment_score asc | project id, review_text, sentiment_score, status"),
+    ],
+    "cr-response-rate": [
+        ("Pending Reviews", lambda t: f"{t} | where isnull(chatbot_statement) | order by created_at desc | project id, review_text, status, error_message"),
+        ("Response Status Breakdown", lambda t: f"{t} | summarize count = count(), responded = countif(isnotnull(chatbot_statement)) by status | order by count desc"),
+    ],
+}
+
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+def _use_kql() -> bool:
+    """Return True if KQL should be used (cloud mode with RTI configured)."""
+    return bool(get_settings().fabric_kql_cluster_uri)
+
+
+# ── Tool implementations ─────────────────────────────────────────
 
 def _get_metrics_summary() -> dict:
+    if _use_kql():
+        return _get_metrics_summary_kql()
+
     conn = get_reviews_connection()
     try:
         results = {}
@@ -83,7 +156,29 @@ def _get_metrics_summary() -> dict:
         conn.close()
 
 
+def _get_metrics_summary_kql() -> dict:
+    client = get_reviews_connection()
+    table = _kql_table()
+    try:
+        results = {}
+        for metric_id, meta in _METRIC_KQL.items():
+            kql = meta["kql"](table)
+            rows = execute_kql_query(client, kql)
+            value = rows[0].get("value") if rows and "value" in rows[0] else None
+            results[metric_id] = {
+                "label": meta["label"],
+                "value": value,
+                "format": meta["format"],
+            }
+        return {"tab": "customer-reviews", "metrics": results}
+    finally:
+        client.close()
+
+
 def _get_metric_drivers(metric_id: str) -> dict:
+    if _use_kql():
+        return _get_metric_drivers_kql(metric_id)
+
     if metric_id not in _DRIVER_SQL:
         return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(_DRIVER_SQL.keys())}"}
 
@@ -98,8 +193,27 @@ def _get_metric_drivers(metric_id: str) -> dict:
         conn.close()
 
 
+def _get_metric_drivers_kql(metric_id: str) -> dict:
+    if metric_id not in _DRIVER_KQL:
+        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(_DRIVER_KQL.keys())}"}
+
+    client = get_reviews_connection()
+    table = _kql_table()
+    try:
+        drivers = []
+        for label, kql_fn in _DRIVER_KQL[metric_id]:
+            rows = execute_kql_query(client, kql_fn(table))
+            drivers.append({"label": label, "data": rows})
+        return {"metric_id": metric_id, "tab": "customer-reviews", "drivers": drivers}
+    finally:
+        client.close()
+
+
 def _get_review_analysis() -> dict:
     """Provide an overview of all reviews with sentiment and response status."""
+    if _use_kql():
+        return _get_review_analysis_kql()
+
     conn = get_reviews_connection()
     try:
         summary_sql = """
@@ -118,6 +232,27 @@ def _get_review_analysis() -> dict:
     finally:
         conn.close()
 
+
+def _get_review_analysis_kql() -> dict:
+    client = get_reviews_connection()
+    table = _kql_table()
+    try:
+        kql = (
+            f"{table}"
+            " | summarize review_count = count(),"
+            " avg_score = avg(sentiment_score),"
+            " responded = countif(isnotnull(chatbot_statement)),"
+            " pending_response = countif(isnull(chatbot_statement))"
+            " by sentiment_category"
+            " | order by avg_score desc"
+        )
+        rows = execute_kql_query(client, kql)
+        return {"review_analysis": rows}
+    finally:
+        client.close()
+
+
+# ── Tool registration ─────────────────────────────────────────────
 
 def get_tools():
     return [

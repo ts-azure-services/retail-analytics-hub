@@ -367,6 +367,45 @@ Constraints:
 - Use markdown tables for test listings, code blocks only for fixture examples and directory structure
 """
 
+[sql-parity-docs]
+prompt = """
+Generate docs/sql-parity.md documenting the multi-dialect SQL system (Postgres/DuckDB ↔ MSSQL ↔ KQL). Structure:
+
+1. **Runtime Modes** — Table with 3 modes (Local DuckDB, Fabric SQL, Fabric KQL), when each is active (based on env vars), SQL dialect used, connection type, and which components use it. Follow with a table of the 4 environment variables: FABRIC_SQL_ENDPOINT, FABRIC_KQL_CLUSTER_URI, FABRIC_KQL_DATABASE, FABRIC_KQL_TABLE.
+
+2. **Dialect Switching — Dashboard** — Three sub-sections:
+   - Detection: dialect determined at startup in query-executor.ts via FABRIC_SQL_ENDPOINT.
+   - Query Routing: getQueriesForTab(tabId, dialect) in metric-queries.ts — Postgres lookup for 'postgres', lazy-loads metric-queries-mssql.ts for 'mssql', returns [] for customer-reviews+mssql (KQL handled separately). Show how customer-reviews is intercepted before getQueriesForTab in executeTabMetrics.
+   - Tab Coverage: table with all 5 tabs (36 tiles), showing Postgres source, MSSQL source, and KQL source for each. Note metric-queries-mssql.ts contains 30 MSSQL queries (4 tabs) with [_public]. prefix. 6 KQL queries for reviews are in query-executor.ts.
+
+3. **Dialect Switching — Agents** — Three sub-sections:
+   - Detection: use_mssql_dialect() in agents/shared/db.py as single source of truth.
+   - Query Routing Per Module: table for each of the 7 agent tool modules (main_tab, omnichannel_tab, engagement_tab, inventory_tab, timeseries, aggregated, reviews_tab) showing Postgres SQL source, MSSQL SQL source, and special functions switched.
+   - MSSQL Variants Module: describe sql_variants/__init__.py contents — metric queries (30), driver queries (~80), extra queries (channel comparison, segment analysis, SKU analysis), timeseries functions, aggregated queries (health check + correlation), public API functions.
+   - Row Limit Enforcement: execute_query() appends LIMIT for Postgres, skips for MSSQL (queries use TOP where needed).
+
+4. **Syntax Differences** — Table mapping Postgres/DuckDB syntax to MSSQL/T-SQL for: boolean literals, bare boolean checks, conditional count (FILTER vs CASE), row limits (LIMIT vs TOP), schema prefix, AVG on integers (CAST fix), STDDEV vs STDEV/STDEVP, CORR vs manual CTE formula, NULLIF.
+   - Integer AVG Truncation: explain the MSSQL integer division issue, show wrong/correct examples, list all columns requiring CAST(col AS FLOAT) with their tables and affected query counts.
+   - CORR Formula: show Postgres CORR vs MSSQL CTE equivalent using STDEVP (population). Explain why the CTE is needed (consistent row sets when NULLs present) and why STDEVP not STDEV (matches CORR population semantics).
+
+5. **SQL Parity Test** — Four sub-sections:
+   - Overview: tests/sql_parity_test.py validates MSSQL translations match Postgres/DuckDB originals against a local azure-sql-edge container.
+   - Infrastructure: container image (azure-sql-edge), docker-compose file, health check method, database name.
+   - Data Pipeline: DuckDB connect → MSSQL connect → table export (multi-row INSERT VALUES, 900 rows/batch, fetchmany streaming) → row count verification with re-export on mismatch.
+   - What's Tested: table showing 3 categories (dashboard metrics 36, agent drivers 61, aggregated 11 = 108 total) with comparison method for each. Note make sql-parity-test handles full lifecycle. Show report JSON format.
+
+6. **File Inventory** — Table mapping every file involved: dashboard query files (3), agent db/config (2), sql_variants module (1), 6 agent tool modules, parity test files (3).
+
+7. **Adding a New Metric** — Numbered checklist: add Postgres query, add MSSQL translation (with syntax conversion rules), add to parity test, add KQL if customer reviews, run make sql-parity-test.
+
+Constraints:
+- No Makefile commands or usage instructions beyond 'make sql-parity-test'
+- Code snippets limited to dialect detection lines, the CORR CTE formula, and the CAST example
+- Verify file paths and function names against the actual codebase
+- Cross-reference metric IDs from docs/dashboard.md and docs/metrics.md
+- Use markdown tables for all structured listings
+"""
+
 [security-checklist]
 prompt = """
 Generate docs/security-checklist.md — a comprehensive security and compliance checklist for this retail simulation platform. Derive the inventory from infra/cloud/main.tf (Terraform), infra/local/main.tf, agents/docker-compose.yml, agents/shared/config.py, agents/shared/db.py, and local.env. Structure:

@@ -996,25 +996,173 @@ create-shortcuts: ## [core] Create shortcuts to mirrored CosmosDB & Postgres
 	@echo ""
 
 
-update-fabric-sql-endpoint: ## [core] Update FABRIC_SQL_ENDPOINT on container apps (usage: make update-fabric-sql-endpoint FABRIC_SQL_ENDPOINT=<endpoint>)
-	@if [ -z "$(FABRIC_SQL_ENDPOINT)" ]; then \
-		echo "ERROR: FABRIC_SQL_ENDPOINT is required."; \
-		echo "Usage: make update-fabric-sql-endpoint FABRIC_SQL_ENDPOINT=<your-endpoint>.datawarehouse.fabric.microsoft.com"; \
-		exit 1; \
-	fi
-	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
-	if [ -z "$$SUBSCRIPTION_ID" ]; then \
-		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
+update-fabric-endpoints: ## [core] Update all Fabric endpoints on container apps (interactive prompts)
+	@echo "╔══════════════════════════════════════════════════════════════╗"
+	@echo "║          Fabric Endpoint Configuration                      ║"
+	@echo "╚══════════════════════════════════════════════════════════════╝"
+	@echo ""
+	@# Load existing fabric.env as defaults if present
+	@EXISTING_SQL=""; EXISTING_DB="postgres-mirror"; \
+	EXISTING_KQL_URI=""; EXISTING_KQL_DB=""; EXISTING_KQL_TABLE="CustomerReviews"; \
+	if [ -f fabric.env ]; then \
+		EXISTING_SQL=$$(grep '^FABRIC_SQL_ENDPOINT=' fabric.env 2>/dev/null | cut -d= -f2-); \
+		EXISTING_DB=$$(grep '^FABRIC_SQL_DATABASE=' fabric.env 2>/dev/null | cut -d= -f2-); \
+		EXISTING_KQL_URI=$$(grep '^FABRIC_KQL_CLUSTER_URI=' fabric.env 2>/dev/null | cut -d= -f2-); \
+		EXISTING_KQL_DB=$$(grep '^FABRIC_KQL_DATABASE=' fabric.env 2>/dev/null | cut -d= -f2-); \
+		EXISTING_KQL_TABLE=$$(grep '^FABRIC_KQL_TABLE=' fabric.env 2>/dev/null | cut -d= -f2-); \
+		[ -z "$$EXISTING_DB" ] && EXISTING_DB="postgres-mirror"; \
+		[ -z "$$EXISTING_KQL_TABLE" ] && EXISTING_KQL_TABLE="CustomerReviews"; \
+		echo "  (loaded defaults from fabric.env — press Enter to keep)"; \
+		echo ""; \
+	fi; \
+	printf "  Fabric SQL Endpoint"; \
+	if [ -n "$$EXISTING_SQL" ]; then printf " [$$EXISTING_SQL]"; fi; \
+	printf ": "; \
+	read INPUT_SQL; \
+	[ -z "$$INPUT_SQL" ] && INPUT_SQL="$$EXISTING_SQL"; \
+	if [ -z "$$INPUT_SQL" ]; then \
+		echo "  ERROR: Fabric SQL Endpoint is required."; \
 		exit 1; \
 	fi; \
-	echo "Planning Terraform update with FABRIC_SQL_ENDPOINT=$(FABRIC_SQL_ENDPOINT)..."; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud plan \
-		$(TF_ENV_VARS) \
-		-var="fabric_sql_endpoint=$(FABRIC_SQL_ENDPOINT)" \
-		-out=tfplan && \
-	echo "Applying..."; \
-	ARM_SUBSCRIPTION_ID=$$SUBSCRIPTION_ID terraform -chdir=infra/cloud apply tfplan
-	@echo "\033[0;32m✅ FABRIC_SQL_ENDPOINT updated on container apps!\033[0m"
+	printf "  Fabric SQL Database [$$EXISTING_DB]: "; \
+	read INPUT_DB; \
+	[ -z "$$INPUT_DB" ] && INPUT_DB="$$EXISTING_DB"; \
+	echo ""; \
+	printf "  KQL Cluster URI"; \
+	if [ -n "$$EXISTING_KQL_URI" ]; then printf " [$$EXISTING_KQL_URI]"; fi; \
+	printf ": "; \
+	read INPUT_KQL_URI; \
+	[ -z "$$INPUT_KQL_URI" ] && INPUT_KQL_URI="$$EXISTING_KQL_URI"; \
+	printf "  KQL Database"; \
+	if [ -n "$$EXISTING_KQL_DB" ]; then printf " [$$EXISTING_KQL_DB]"; fi; \
+	printf ": "; \
+	read INPUT_KQL_DB; \
+	[ -z "$$INPUT_KQL_DB" ] && INPUT_KQL_DB="$$EXISTING_KQL_DB"; \
+	printf "  KQL Table [$$EXISTING_KQL_TABLE]: "; \
+	read INPUT_KQL_TABLE; \
+	[ -z "$$INPUT_KQL_TABLE" ] && INPUT_KQL_TABLE="$$EXISTING_KQL_TABLE"; \
+	echo ""; \
+	echo "  ── Summary ──────────────────────────────────────────────"; \
+	echo "  FABRIC_SQL_ENDPOINT  = $$INPUT_SQL"; \
+	echo "  FABRIC_SQL_DATABASE  = $$INPUT_DB"; \
+	echo "  FABRIC_KQL_CLUSTER_URI = $$INPUT_KQL_URI"; \
+	echo "  FABRIC_KQL_DATABASE  = $$INPUT_KQL_DB"; \
+	echo "  FABRIC_KQL_TABLE     = $$INPUT_KQL_TABLE"; \
+	echo "  ────────────────────────────────────────────────────────"; \
+	echo ""; \
+	printf "  Proceed? [Y/n]: "; \
+	read CONFIRM; \
+	case "$$CONFIRM" in [nN]*) echo "  Aborted."; exit 1;; esac; \
+	echo ""; \
+	echo "  Saving to fabric.env..."; \
+	printf 'FABRIC_SQL_ENDPOINT=%s\nFABRIC_SQL_DATABASE=%s\nFABRIC_KQL_CLUSTER_URI=%s\nFABRIC_KQL_DATABASE=%s\nFABRIC_KQL_TABLE=%s\n' \
+		"$$INPUT_SQL" "$$INPUT_DB" "$$INPUT_KQL_URI" "$$INPUT_KQL_DB" "$$INPUT_KQL_TABLE" > fabric.env; \
+	echo "  Reading Terraform outputs..."; \
+	RG=$$(terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null); \
+	DASHBOARD_APP=$$(terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null); \
+	AGENT1_APP=$$(terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null); \
+	AGENT2_APP=$$(terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null); \
+	AGENT3_APP=$$(terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null); \
+	if [ -z "$$RG" ]; then \
+		echo "  ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi; \
+	echo "  Updating dashboard..."; \
+	az containerapp update -n "$$DASHBOARD_APP" -g "$$RG" \
+		--set-env-vars \
+		"FABRIC_SQL_ENDPOINT=$$INPUT_SQL" \
+		"FABRIC_KQL_CLUSTER_URI=$$INPUT_KQL_URI" \
+		"FABRIC_KQL_DATABASE=$$INPUT_KQL_DB" \
+		"FABRIC_KQL_TABLE=$$INPUT_KQL_TABLE" \
+		--output none; \
+	echo "  Updating agent1..."; \
+	az containerapp update -n "$$AGENT1_APP" -g "$$RG" \
+		--set-env-vars \
+		"FABRIC_SQL_ENDPOINT=$$INPUT_SQL" \
+		--output none; \
+	echo "  Updating agent2..."; \
+	az containerapp update -n "$$AGENT2_APP" -g "$$RG" \
+		--set-env-vars \
+		"FABRIC_SQL_ENDPOINT=$$INPUT_SQL" \
+		--output none; \
+	echo "  Updating agent3..."; \
+	az containerapp update -n "$$AGENT3_APP" -g "$$RG" \
+		--set-env-vars \
+		"FABRIC_SQL_ENDPOINT=$$INPUT_SQL" \
+		"FABRIC_KQL_CLUSTER_URI=$$INPUT_KQL_URI" \
+		"FABRIC_KQL_DATABASE=$$INPUT_KQL_DB" \
+		"FABRIC_KQL_TABLE=$$INPUT_KQL_TABLE" \
+		--output none; \
+	echo ""; \
+	echo "\033[0;32m✅ All Fabric endpoints updated on container apps!\033[0m"
+
+
+validate-fabric-endpoints: ## [util] Verify Fabric env vars are set on all container apps
+	@RG=$$(terraform -chdir=infra/cloud output -raw resource_group 2>/dev/null); \
+	DASHBOARD_APP=$$(terraform -chdir=infra/cloud output -raw dashboard_app_name 2>/dev/null); \
+	AGENT1_APP=$$(terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null); \
+	AGENT2_APP=$$(terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null); \
+	AGENT3_APP=$$(terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null); \
+	if [ -z "$$RG" ]; then \
+		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
+		exit 1; \
+	fi; \
+	PASS=0; FAIL=0; \
+	echo ""; \
+	echo "Validating Fabric endpoints on container apps ($$RG)"; \
+	echo "══════════════════════════════════════════════════════════════"; \
+	for PAIR in \
+		"$$DASHBOARD_APP:FABRIC_SQL_ENDPOINT,FABRIC_KQL_CLUSTER_URI,FABRIC_KQL_DATABASE,FABRIC_KQL_TABLE" \
+		"$$AGENT1_APP:FABRIC_SQL_ENDPOINT" \
+		"$$AGENT2_APP:FABRIC_SQL_ENDPOINT" \
+		"$$AGENT3_APP:FABRIC_SQL_ENDPOINT,FABRIC_KQL_CLUSTER_URI,FABRIC_KQL_DATABASE,FABRIC_KQL_TABLE"; \
+	do \
+		APP_NAME=$${PAIR%%:*}; \
+		VARS=$${PAIR#*:}; \
+		echo ""; \
+		echo "  $$APP_NAME"; \
+		ENVS=$$(az containerapp show -n "$$APP_NAME" -g "$$RG" \
+			--query "properties.template.containers[0].env" -o json 2>/dev/null); \
+		if [ -z "$$ENVS" ] || [ "$$ENVS" = "null" ]; then \
+			echo "    ✗ Could not read env vars"; \
+			FAIL=$$((FAIL + 1)); \
+			continue; \
+		fi; \
+		IFS=','; for VAR in $$VARS; do \
+			VAL=$$(echo "$$ENVS" | python3 -c "import sys,json; envs=json.load(sys.stdin); print(next((e['value'] for e in envs if e['name']=='$$VAR'),''))" 2>/dev/null); \
+			if [ -n "$$VAL" ] && [ "$$VAL" != "__$${VAR}__" ]; then \
+				echo "    ✓ $$VAR = $$VAL"; \
+				PASS=$$((PASS + 1)); \
+			else \
+				echo "    ✗ $$VAR = (not set)"; \
+				FAIL=$$((FAIL + 1)); \
+			fi; \
+		done; unset IFS; \
+	done; \
+	echo ""; \
+	echo "══════════════════════════════════════════════════════════════"; \
+	echo "  $$PASS set, $$FAIL missing"; \
+	if [ $$FAIL -gt 0 ]; then \
+		echo "  Run 'make update-fabric-endpoints' to fix."; \
+		exit 1; \
+	fi; \
+	echo "\033[0;32m✅ All Fabric endpoints verified!\033[0m"
+
+
+sql-parity-test: ## [core] Run SQL parity test (Postgres/DuckDB vs MSSQL via azure-sql-edge)
+	@EXISTING=$$(docker ps -q --filter "publish=1433" 2>/dev/null); \
+	if [ -n "$$EXISTING" ]; then \
+		echo "Port 1433 in use — stopping container $$EXISTING..."; \
+		docker stop $$EXISTING >/dev/null 2>&1; \
+		docker rm $$EXISTING >/dev/null 2>&1; \
+		sleep 3; \
+	fi
+	@echo "Starting azure-sql-edge..."
+	docker compose -f tests/docker-compose-sqlserver.yml up -d --wait
+	@echo "Running parity test..."
+	uv run tests/sql_parity_test.py
+	@echo "Stopping azure-sql-edge..."
+	docker compose -f tests/docker-compose-sqlserver.yml down
 
 
 
@@ -1106,11 +1254,8 @@ cloud-dashboard-build: ## [util] Build dashboard image in ACR
 		echo "ERROR: Could not read container_registry_name from Terraform output. Run 'make tf' first."; \
 		exit 1; \
 	fi
-	@echo "Bundling event_hubs.duckdb into dashboard build context..."
-	@cp event_hubs.duckdb dashboard/event_hubs.duckdb
-	@echo "Building dashboard in ACR..."
-	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/ ; \
-		rm -f dashboard/event_hubs.duckdb
+	@echo "Building dashboard in ACR (reviews use KQL in cloud)..."
+	az acr build --registry $(ACR_NAME) --image dashboard:latest --platform linux/amd64 dashboard/
 
 cloud-agents-build: ## [util] Build all 3 agent images in ACR
 	$(eval ACR_NAME := $(shell terraform -chdir=infra/cloud output -raw container_registry_name 2>/dev/null))
@@ -1132,6 +1277,9 @@ cloud-update: ## [util] Update all Container Apps from existing ACR images (skip
 	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
 	$(eval OPENAI_EP := $(shell terraform -chdir=infra/cloud output -raw openai_endpoint 2>/dev/null))
 	$(eval FABRIC_EP := $(shell terraform -chdir=infra/cloud output -raw fabric_sql_endpoint 2>/dev/null))
+	$(eval KQL_URI := $(shell grep -s FABRIC_KQL_CLUSTER_URI fabric.env 2>/dev/null | cut -d= -f2-))
+	$(eval KQL_DB := $(shell grep -s FABRIC_KQL_DATABASE fabric.env 2>/dev/null | cut -d= -f2-))
+	$(eval KQL_TABLE := $(shell grep -s FABRIC_KQL_TABLE fabric.env 2>/dev/null | cut -d= -f2-))
 	@if [ -z "$(ACR_SERVER)" ] || [ -z "$(RG)" ]; then \
 		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
 		exit 1; \
@@ -1144,6 +1292,9 @@ cloud-update: ## [util] Update all Container Apps from existing ACR images (skip
 	@echo "Updating Container App images + probes + env vars..."
 	@sed -e 's|name: dashboard|name: dashboard\n        image: $(ACR_SERVER)/dashboard:latest|' \
 	     -e 's|__FABRIC_SQL_ENDPOINT__|$(FABRIC_EP)|g' \
+	     -e 's|__FABRIC_KQL_CLUSTER_URI__|$(KQL_URI)|g' \
+	     -e 's|__FABRIC_KQL_DATABASE__|$(KQL_DB)|g' \
+	     -e 's|__FABRIC_KQL_TABLE__|$(KQL_TABLE)|g' \
 	     -e 's|__AGENT1_APP__|$(AGENT1_APP)|g' \
 	     -e 's|__AGENT2_APP__|$(AGENT2_APP)|g' \
 	     -e 's|__AGENT3_APP__|$(AGENT3_APP)|g' \
@@ -1161,6 +1312,9 @@ cloud-update: ## [util] Update all Container Apps from existing ACR images (skip
 	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml /tmp/agent2-probe.yaml
 	@sed -e 's|name: agent3|name: agent3\n        image: $(ACR_SERVER)/agent3-sentiment:latest|' \
 	     -e 's|__FABRIC_SQL_ENDPOINT__|$(FABRIC_EP)|g' \
+	     -e 's|__FABRIC_KQL_CLUSTER_URI__|$(KQL_URI)|g' \
+	     -e 's|__FABRIC_KQL_DATABASE__|$(KQL_DB)|g' \
+	     -e 's|__FABRIC_KQL_TABLE__|$(KQL_TABLE)|g' \
 	     -e 's|__AZURE_OPENAI_ENDPOINT__|$(OPENAI_EP)|g' \
 	     infra/cloud/probes/agent3.yaml > /tmp/agent3-probe.yaml
 	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml /tmp/agent3-probe.yaml

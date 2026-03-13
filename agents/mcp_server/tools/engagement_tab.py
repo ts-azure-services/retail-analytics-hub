@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from mcp.types import Tool
 
-from agents.shared.db import get_postgres_connection, execute_query
+from agents.shared.db import get_postgres_connection, execute_query, use_mssql_dialect
 
 _METRIC_SQL = {
     "ce-active-rate": {
@@ -104,8 +104,13 @@ _DRIVER_SQL = {
 def _get_metrics_summary() -> dict:
     conn = get_postgres_connection()
     try:
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import get_mssql_metric_sql
+            metric_sql = get_mssql_metric_sql("customer-engagement")
+        else:
+            metric_sql = _METRIC_SQL
         results = {}
-        for metric_id, meta in _METRIC_SQL.items():
+        for metric_id, meta in metric_sql.items():
             rows = execute_query(conn, meta["sql"])
             value = rows[0]["value"] if rows and "value" in rows[0] else None
             results[metric_id] = {
@@ -119,13 +124,19 @@ def _get_metrics_summary() -> dict:
 
 
 def _get_metric_drivers(metric_id: str) -> dict:
-    if metric_id not in _DRIVER_SQL:
-        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(_DRIVER_SQL.keys())}"}
+    if use_mssql_dialect():
+        from agents.mcp_server.tools.sql_variants import get_mssql_driver_sql
+        driver_sql = get_mssql_driver_sql("customer-engagement")
+    else:
+        driver_sql = _DRIVER_SQL
+
+    if metric_id not in driver_sql:
+        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(driver_sql.keys())}"}
 
     conn = get_postgres_connection()
     try:
         drivers = []
-        for label, sql in _DRIVER_SQL[metric_id]:
+        for label, sql in driver_sql[metric_id]:
             rows = execute_query(conn, sql)
             drivers.append({"label": label, "data": rows})
         return {"metric_id": metric_id, "tab": "customer-engagement", "drivers": drivers}
@@ -137,19 +148,23 @@ def _get_segment_analysis() -> dict:
     """Analyze customer segments by value tier and activity state."""
     conn = get_postgres_connection()
     try:
-        sql = """
-            SELECT
-                value_tier,
-                activity_state,
-                COUNT(*) AS customers,
-                AVG(total_spend) AS avg_spend,
-                AVG(purchase_count) AS avg_purchases,
-                AVG(churn_risk_score) AS avg_churn_risk,
-                AVG(loyalty_points) AS avg_loyalty_points
-            FROM customer_snapshots
-            GROUP BY value_tier, activity_state
-            ORDER BY value_tier, activity_state
-        """
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import _ENGAGEMENT_SEGMENT_SQL
+            sql = _ENGAGEMENT_SEGMENT_SQL
+        else:
+            sql = """
+                SELECT
+                    value_tier,
+                    activity_state,
+                    COUNT(*) AS customers,
+                    AVG(total_spend) AS avg_spend,
+                    AVG(purchase_count) AS avg_purchases,
+                    AVG(churn_risk_score) AS avg_churn_risk,
+                    AVG(loyalty_points) AS avg_loyalty_points
+                FROM customer_snapshots
+                GROUP BY value_tier, activity_state
+                ORDER BY value_tier, activity_state
+            """
         rows = execute_query(conn, sql)
         return {"segment_analysis": rows}
     finally:

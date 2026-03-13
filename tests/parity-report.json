@@ -1,0 +1,19 @@
+{
+  "dashboard_metrics": {
+    "passed": 36,
+    "failed": 0
+  },
+  "agent_drivers": {
+    "passed": 61,
+    "failed": 0
+  },
+  "aggregated": {
+    "passed": 11,
+    "failed": 0
+  },
+  "total_passed": 108,
+  "total_failed": 0,
+  "total": 108,
+  "errors": [],
+  "status": "PASS"
+}

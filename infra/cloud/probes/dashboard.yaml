@@ -19,8 +19,12 @@ properties:
             value: http://__AGENT2_APP__
           - name: AGENT3_URL
             value: http://__AGENT3_APP__
-          - name: EVENT_HUBS_DB
-            value: /app/data/event_hubs.duckdb
+          - name: FABRIC_KQL_CLUSTER_URI
+            value: __FABRIC_KQL_CLUSTER_URI__
+          - name: FABRIC_KQL_DATABASE
+            value: __FABRIC_KQL_DATABASE__
+          - name: FABRIC_KQL_TABLE
+            value: __FABRIC_KQL_TABLE__
           - name: NODE_ENV
             value: production
         probes:

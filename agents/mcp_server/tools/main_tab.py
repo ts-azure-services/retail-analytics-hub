@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from mcp.types import Tool
 
-from agents.shared.db import get_postgres_connection, execute_query
+from agents.shared.db import get_postgres_connection, execute_query, use_mssql_dialect
 
 # ── Metric SQL definitions (from metric-registry.ts) ─────────────
 
@@ -100,8 +100,13 @@ def _get_metrics_summary() -> dict:
     """Fetch all 6 Main tab metrics."""
     conn = get_postgres_connection()
     try:
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import get_mssql_metric_sql
+            metric_sql = get_mssql_metric_sql("main")
+        else:
+            metric_sql = _METRIC_SQL
         results = {}
-        for metric_id, meta in _METRIC_SQL.items():
+        for metric_id, meta in metric_sql.items():
             rows = execute_query(conn, meta["sql"])
             value = rows[0]["value"] if rows and "value" in rows[0] else None
             results[metric_id] = {
@@ -116,13 +121,19 @@ def _get_metrics_summary() -> dict:
 
 def _get_metric_drivers(metric_id: str) -> dict:
     """Fetch driver data for a specific Main tab metric."""
-    if metric_id not in _DRIVER_SQL:
-        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(_DRIVER_SQL.keys())}"}
+    if use_mssql_dialect():
+        from agents.mcp_server.tools.sql_variants import get_mssql_driver_sql
+        driver_sql = get_mssql_driver_sql("main")
+    else:
+        driver_sql = _DRIVER_SQL
+
+    if metric_id not in driver_sql:
+        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(driver_sql.keys())}"}
 
     conn = get_postgres_connection()
     try:
         drivers = []
-        for label, sql in _DRIVER_SQL[metric_id]:
+        for label, sql in driver_sql[metric_id]:
             rows = execute_query(conn, sql)
             drivers.append({"label": label, "data": rows})
         return {"metric_id": metric_id, "tab": "main", "drivers": drivers}

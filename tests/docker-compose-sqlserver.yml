@@ -1,0 +1,22 @@
+# azure-sql-edge for SQL parity testing (Postgres/DuckDB vs MSSQL)
+#
+# Usage:
+#   docker compose -f tests/docker-compose-sqlserver.yml up -d
+#   python tests/sql_parity_test.py
+#   docker compose -f tests/docker-compose-sqlserver.yml down
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: parity-test-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "DevPass#2026!"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/1433' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 15s

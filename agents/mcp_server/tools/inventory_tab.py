@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from mcp.types import Tool
 
-from agents.shared.db import get_postgres_connection, execute_query
+from agents.shared.db import get_postgres_connection, execute_query, use_mssql_dialect
 
 _METRIC_SQL = {
     "ir-qty-on-hand": {
@@ -110,8 +110,13 @@ _DRIVER_SQL = {
 def _get_metrics_summary() -> dict:
     conn = get_postgres_connection()
     try:
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import get_mssql_metric_sql
+            metric_sql = get_mssql_metric_sql("inventory-replenishment")
+        else:
+            metric_sql = _METRIC_SQL
         results = {}
-        for metric_id, meta in _METRIC_SQL.items():
+        for metric_id, meta in metric_sql.items():
             rows = execute_query(conn, meta["sql"])
             value = rows[0]["value"] if rows and "value" in rows[0] else None
             results[metric_id] = {
@@ -125,13 +130,19 @@ def _get_metrics_summary() -> dict:
 
 
 def _get_metric_drivers(metric_id: str) -> dict:
-    if metric_id not in _DRIVER_SQL:
-        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(_DRIVER_SQL.keys())}"}
+    if use_mssql_dialect():
+        from agents.mcp_server.tools.sql_variants import get_mssql_driver_sql
+        driver_sql = get_mssql_driver_sql("inventory-replenishment")
+    else:
+        driver_sql = _DRIVER_SQL
+
+    if metric_id not in driver_sql:
+        return {"error": f"Unknown metric_id: {metric_id}. Valid: {list(driver_sql.keys())}"}
 
     conn = get_postgres_connection()
     try:
         drivers = []
-        for label, sql in _DRIVER_SQL[metric_id]:
+        for label, sql in driver_sql[metric_id]:
             rows = execute_query(conn, sql)
             drivers.append({"label": label, "data": rows})
         return {"metric_id": metric_id, "tab": "inventory-replenishment", "drivers": drivers}
@@ -143,34 +154,41 @@ def _get_sku_analysis() -> dict:
     """Analyze inventory health at the SKU level — summarised to avoid token overflow."""
     conn = get_postgres_connection()
     try:
-        # High-level summary: counts and averages by reorder status
-        summary_sql = """
-            SELECT
-                CASE WHEN quantity_on_hand <= reorder_point THEN 'below_reorder' ELSE 'above_reorder' END AS status,
-                COUNT(*) AS sku_count,
-                ROUND(AVG(quantity_on_hand), 1) AS avg_qty_on_hand,
-                ROUND(AVG(quantity_reserved), 1) AS avg_qty_reserved,
-                ROUND(AVG(on_order_qty), 1) AS avg_on_order,
-                SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END) AS zero_stock_count
-            FROM inventory
-            GROUP BY status
-        """
+        if use_mssql_dialect():
+            from agents.mcp_server.tools.sql_variants import (
+                _INVENTORY_SKU_SUMMARY_SQL,
+                _INVENTORY_CRITICAL_SKUS_SQL,
+            )
+            summary_sql = _INVENTORY_SKU_SUMMARY_SQL
+            critical_sql = _INVENTORY_CRITICAL_SKUS_SQL
+        else:
+            # High-level summary: counts and averages by reorder status
+            summary_sql = """
+                SELECT
+                    CASE WHEN quantity_on_hand <= reorder_point THEN 'below_reorder' ELSE 'above_reorder' END AS status,
+                    COUNT(*) AS sku_count,
+                    ROUND(AVG(quantity_on_hand), 1) AS avg_qty_on_hand,
+                    ROUND(AVG(quantity_reserved), 1) AS avg_qty_reserved,
+                    ROUND(AVG(on_order_qty), 1) AS avg_on_order,
+                    SUM(CASE WHEN quantity_on_hand = 0 THEN 1 ELSE 0 END) AS zero_stock_count
+                FROM inventory
+                GROUP BY status
+            """
+            # Top 20 most critical SKUs (lowest stock relative to reorder point)
+            critical_sql = """
+                SELECT
+                    i.sku,
+                    i.location_id,
+                    i.quantity_on_hand,
+                    i.quantity_reserved,
+                    i.on_order_qty,
+                    i.reorder_point,
+                    CASE WHEN i.quantity_on_hand <= i.reorder_point THEN TRUE ELSE FALSE END AS below_reorder
+                FROM inventory i
+                ORDER BY (i.quantity_on_hand - i.reorder_point) ASC
+                LIMIT 20
+            """
         summary_rows = execute_query(conn, summary_sql)
-
-        # Top 20 most critical SKUs (lowest stock relative to reorder point)
-        critical_sql = """
-            SELECT
-                i.sku,
-                i.location_id,
-                i.quantity_on_hand,
-                i.quantity_reserved,
-                i.on_order_qty,
-                i.reorder_point,
-                CASE WHEN i.quantity_on_hand <= i.reorder_point THEN TRUE ELSE FALSE END AS below_reorder
-            FROM inventory i
-            ORDER BY (i.quantity_on_hand - i.reorder_point) ASC
-            LIMIT 20
-        """
         critical_rows = execute_query(conn, critical_sql)
         return {"summary": summary_rows, "critical_skus": critical_rows}
     finally:

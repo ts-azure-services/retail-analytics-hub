@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # ── Fabric SQL endpoint (cloud — empty means local DuckDB) ───
     fabric_sql_endpoint: str = ""
 
+    # ── Fabric KQL endpoint (cloud — empty means local DuckDB for reviews) ──
+    fabric_kql_cluster_uri: str = ""
+    fabric_kql_database: str = ""
+    fabric_kql_table: str = ""
+
     # ── DuckDB paths ──────────────────────────────────────────────
     local_postgres_db: str = Field(
         default_factory=lambda: os.environ.get(

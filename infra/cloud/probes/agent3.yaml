@@ -13,6 +13,12 @@ properties:
             value: postgres-mirror
           - name: AZURE_OPENAI_ENDPOINT
             value: __AZURE_OPENAI_ENDPOINT__
+          - name: FABRIC_KQL_CLUSTER_URI
+            value: __FABRIC_KQL_CLUSTER_URI__
+          - name: FABRIC_KQL_DATABASE
+            value: __FABRIC_KQL_DATABASE__
+          - name: FABRIC_KQL_TABLE
+            value: __FABRIC_KQL_TABLE__
         probes:
           - type: Liveness
             httpGet:

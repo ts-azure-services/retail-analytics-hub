@@ -29,9 +29,8 @@ COPY --from=build /app/dist/index.html ./dist/index.html
 # Compiled server
 COPY --from=build /app/dist/server.js ./dist/server.js
 
-# Bundle event_hubs.duckdb for customer reviews (read-only, lightweight)
-COPY event_hubs.duckdb ./data/event_hubs.duckdb
-ENV EVENT_HUBS_DB=/app/data/event_hubs.duckdb
+# In local dev, event_hubs.duckdb is volume-mounted.
+# In cloud, customer reviews are queried via KQL (Fabric Real-Time Intelligence).
 
 ENV NODE_ENV=production
 EXPOSE 3001

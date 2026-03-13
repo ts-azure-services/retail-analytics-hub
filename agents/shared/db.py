@@ -1,8 +1,9 @@
 """Read-only database connection manager.
 
-Supports two backends:
+Supports three backends:
   - Local: DuckDB files (default, when FABRIC_SQL_ENDPOINT is unset)
-  - Cloud: Fabric SQL endpoint via psycopg (when FABRIC_SQL_ENDPOINT is set)
+  - Cloud SQL: Fabric SQL endpoint via psycopg (when FABRIC_SQL_ENDPOINT is set)
+  - Cloud KQL: Fabric KQL via azure-kusto-data (when FABRIC_KQL_CLUSTER_URI is set)
 """
 
 from __future__ import annotations
@@ -31,6 +32,19 @@ def _fabric_connection():
     return psycopg.connect(get_settings().fabric_sql_endpoint)
 
 
+def _kql_connection():
+    """Return a KustoClient connected to the Fabric KQL endpoint."""
+    from azure.identity import DefaultAzureCredential
+    from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
+
+    settings = get_settings()
+    credential = DefaultAzureCredential()
+    kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
+        settings.fabric_kql_cluster_uri, credential
+    )
+    return KustoClient(kcsb)
+
+
 # ── Public connection getters ────────────────────────────────────
 
 def get_postgres_connection():
@@ -50,11 +64,31 @@ def get_cosmos_connection():
 
 
 def get_reviews_connection():
-    """Return a read-only connection to the customer reviews DuckDB (event_hubs)."""
+    """Return a connection to customer reviews data.
+
+    Three modes:
+      - KQL: when fabric_kql_cluster_uri is set (returns KustoClient)
+      - Fabric SQL: when fabric_sql_endpoint is set (returns psycopg connection)
+      - Local: DuckDB file (default)
+    """
     settings = get_settings()
+    if settings.fabric_kql_cluster_uri:
+        return _kql_connection()
     if settings.fabric_sql_endpoint:
         return _fabric_connection()
     return _connect(settings.customer_reviews_db)
+
+
+# ── Dialect helper ──────────────────────────────────────────────
+
+def use_mssql_dialect() -> bool:
+    """Return True when SQL queries should use MSSQL/T-SQL syntax.
+
+    This is the single source of truth for dialect selection across all
+    agent tool modules.  When True, callers should use the MSSQL query
+    variants from ``agents.mcp_server.tools.sql_variants``.
+    """
+    return bool(get_settings().fabric_sql_endpoint)
 
 
 # ── Query execution ─────────────────────────────────────────────
@@ -71,9 +105,10 @@ def execute_query(
     """
     settings = get_settings()
 
-    # Enforce row limit
-    if "LIMIT" not in sql.upper():
-        sql = f"{sql.rstrip().rstrip(';')} LIMIT {settings.query_row_limit}"
+    # Enforce row limit (MSSQL uses TOP, Postgres/DuckDB uses LIMIT)
+    if "LIMIT" not in sql.upper() and "TOP " not in sql.upper():
+        if not use_mssql_dialect():
+            sql = f"{sql.rstrip().rstrip(';')} LIMIT {settings.query_row_limit}"
 
     try:
         if params:
@@ -84,5 +119,29 @@ def execute_query(
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
         return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+def execute_kql_query(
+    client,
+    kql: str,
+    database: str | None = None,
+) -> list[dict]:
+    """Execute a KQL query and return results as list of dicts.
+
+    Works with KustoClient from azure-kusto-data.
+    """
+    settings = get_settings()
+    db = database or settings.fabric_kql_database
+
+    try:
+        response = client.execute_query(db, kql)
+        columns = [col.column_name for col in response.primary_results[0].columns]
+        rows = list(response.primary_results[0])
+        return [
+            {col: row[col] for col in columns}
+            for row in rows
+        ]
     except Exception as e:
         return [{"error": str(e)}]

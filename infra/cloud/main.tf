@@ -1345,7 +1345,10 @@ resource "azurerm_container_app" "dashboard" {
 
   identity { type = "SystemAssigned" }
 
-  # registry block added by `make cloud-deploy` after AcrPull role exists
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "system"
+  }
 
   ingress {
     external_enabled = true
@@ -1383,15 +1386,15 @@ resource "azurerm_container_app" "dashboard" {
       }
       env {
         name  = "AGENT1_URL"
-        value = "http://${local.ca_agent1}"
+        value = "https://${local.ca_agent1}.internal.${azurerm_container_app_environment.env.default_domain}"
       }
       env {
         name  = "AGENT2_URL"
-        value = "http://${local.ca_agent2}"
+        value = "https://${local.ca_agent2}.internal.${azurerm_container_app_environment.env.default_domain}"
       }
       env {
         name  = "AGENT3_URL"
-        value = "http://${local.ca_agent3}"
+        value = "https://${local.ca_agent3}.internal.${azurerm_container_app_environment.env.default_domain}"
       }
       env {
         name  = "FABRIC_KQL_CLUSTER_URI"
@@ -1406,8 +1409,36 @@ resource "azurerm_container_app" "dashboard" {
         value = var.fabric_kql_table
       }
 
-      # liveness_probe and readiness_probe added back after real image deploy
+      liveness_probe {
+        transport               = "HTTP"
+        path                    = "/api/health"
+        port                    = 3001
+        initial_delay           = 10
+        interval_seconds        = 30
+        failure_count_threshold = 3
+      }
+      readiness_probe {
+        transport               = "HTTP"
+        path                    = "/api/health"
+        port                    = 3001
+        initial_delay           = 5
+        interval_seconds        = 10
+        failure_count_threshold = 3
+      }
+      startup_probe {
+        transport               = "HTTP"
+        path                    = "/api/health"
+        port                    = 3001
+        failure_count_threshold = 30
+        interval_seconds        = 2
+      }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+    ]
   }
 
   tags = local.common_tags
@@ -1428,7 +1459,10 @@ resource "azurerm_container_app" "agent1" {
 
   identity { type = "SystemAssigned" }
 
-  # registry block added by `make cloud-deploy` after AcrPull role exists
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "system"
+  }
 
   ingress {
     external_enabled = false
@@ -1465,8 +1499,36 @@ resource "azurerm_container_app" "agent1" {
         value = azurerm_cognitive_account.openai.endpoint
       }
 
-      # liveness_probe and readiness_probe added back after real image deploy
+      liveness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8001
+        initial_delay           = 10
+        interval_seconds        = 30
+        failure_count_threshold = 3
+      }
+      readiness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8001
+        initial_delay           = 5
+        interval_seconds        = 10
+        failure_count_threshold = 3
+      }
+      startup_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8001
+        failure_count_threshold = 30
+        interval_seconds        = 2
+      }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+    ]
   }
 
   tags = local.common_tags
@@ -1487,7 +1549,10 @@ resource "azurerm_container_app" "agent2" {
 
   identity { type = "SystemAssigned" }
 
-  # registry block added by `make cloud-deploy` after AcrPull role exists
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "system"
+  }
 
   ingress {
     external_enabled = false
@@ -1524,8 +1589,36 @@ resource "azurerm_container_app" "agent2" {
         value = azurerm_cognitive_account.openai.endpoint
       }
 
-      # liveness_probe and readiness_probe added back after real image deploy
+      liveness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8002
+        initial_delay           = 10
+        interval_seconds        = 30
+        failure_count_threshold = 3
+      }
+      readiness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8002
+        initial_delay           = 5
+        interval_seconds        = 10
+        failure_count_threshold = 3
+      }
+      startup_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8002
+        failure_count_threshold = 30
+        interval_seconds        = 2
+      }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+    ]
   }
 
   tags = local.common_tags
@@ -1546,7 +1639,10 @@ resource "azurerm_container_app" "agent3" {
 
   identity { type = "SystemAssigned" }
 
-  # registry block added by `make cloud-deploy` after AcrPull role exists
+  registry {
+    server   = azurerm_container_registry.acr.login_server
+    identity = "system"
+  }
 
   ingress {
     external_enabled = false
@@ -1595,8 +1691,36 @@ resource "azurerm_container_app" "agent3" {
         value = var.fabric_kql_table
       }
 
-      # liveness_probe and readiness_probe added back after real image deploy
+      liveness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8003
+        initial_delay           = 10
+        interval_seconds        = 30
+        failure_count_threshold = 3
+      }
+      readiness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8003
+        initial_delay           = 5
+        interval_seconds        = 10
+        failure_count_threshold = 3
+      }
+      startup_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 8003
+        failure_count_threshold = 30
+        interval_seconds        = 2
+      }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+    ]
   }
 
   tags = local.common_tags

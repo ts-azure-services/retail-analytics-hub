@@ -2,7 +2,7 @@
 
 Supports three backends:
   - Local: DuckDB files (default, when FABRIC_SQL_ENDPOINT is unset)
-  - Cloud SQL: Fabric SQL endpoint via psycopg (when FABRIC_SQL_ENDPOINT is set)
+  - Cloud SQL: Fabric SQL endpoint via mssql-python (when FABRIC_SQL_ENDPOINT is set)
   - Cloud KQL: Fabric KQL via azure-kusto-data (when FABRIC_KQL_CLUSTER_URI is set)
 """
 
@@ -27,9 +27,23 @@ def _connect(path: str) -> duckdb.DuckDBPyConnection:
 # ── Fabric helpers (cloud) ───────────────────────────────────────
 
 def _fabric_connection():
-    """Return a psycopg connection to the Fabric SQL endpoint."""
-    import psycopg
-    return psycopg.connect(get_settings().fabric_sql_endpoint)
+    """Return an mssql-python connection to the Fabric SQL endpoint.
+
+    Builds an ODBC-style connection string from FABRIC_SQL_ENDPOINT (server
+    hostname) and FABRIC_SQL_DATABASE, using ActiveDirectoryDefault auth
+    which picks up the Managed Identity token in Container Apps.
+    """
+    from mssql_python import connect as mssql_connect
+
+    settings = get_settings()
+    conn_str = (
+        f"Server={settings.fabric_sql_endpoint},1433;"
+        f"Database={settings.fabric_sql_database};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=no;"
+        "Authentication=ActiveDirectoryDefault;"
+    )
+    return mssql_connect(conn_str)
 
 
 def _kql_connection():
@@ -68,7 +82,7 @@ def get_reviews_connection():
 
     Three modes:
       - KQL: when fabric_kql_cluster_uri is set (returns KustoClient)
-      - Fabric SQL: when fabric_sql_endpoint is set (returns psycopg connection)
+      - Fabric SQL: when fabric_sql_endpoint is set (returns mssql-python connection)
       - Local: DuckDB file (default)
     """
     settings = get_settings()

@@ -9,6 +9,7 @@ const DB_PATH = process.env.LOCAL_POSTGRES_DB ?? path.resolve(import.meta.dirnam
 const REVIEWS_DB_PATH = process.env.EVENT_HUBS_DB ?? path.resolve(import.meta.dirname, '../../event_hubs.duckdb')
 const AGENT3_URL = process.env.AGENT3_URL ?? 'http://localhost:8003'
 const AGENT2_URL = process.env.AGENT2_URL ?? 'http://localhost:8002'
+const AGENT1_URL = process.env.AGENT1_URL ?? 'http://localhost:8001'
 
 let cachedDigest: { narrative: string; summary: string; key_findings: string[]; recommendations: string[]; risk_flags: string[]; generated_at: string } | null = null
 let digestGenerating = false
@@ -52,6 +53,31 @@ app.get('/api/reviews', async (req, res) => {
   } catch (err: unknown) {
     console.error('[server] reviews query error:', err)
     res.status(500).json({ error: 'Reviews query failed' })
+  }
+})
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 120_000)
+    const agentRes = await fetch(`${AGENT1_URL}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+    if (agentRes.ok) {
+      const data = await agentRes.json()
+      res.json(data)
+    } else {
+      const text = await agentRes.text()
+      console.error(`[server] Agent 1 returned ${agentRes.status}: ${text}`)
+      res.status(agentRes.status).json({ error: `Agent 1 error: ${agentRes.status}` })
+    }
+  } catch (err: unknown) {
+    console.error('[server] Agent 1 proxy error:', err)
+    res.status(502).json({ error: 'Agent 1 unreachable' })
   }
 })
 
@@ -127,11 +153,7 @@ async function triggerAgent3() {
 async function start() {
   console.log(`[server] DB path: ${DB_PATH}`)
   await initDb(DB_PATH)
-  try {
-    await initReviewsDb(REVIEWS_DB_PATH)
-  } catch (err) {
-    console.warn(`[server] Reviews DB not available at ${REVIEWS_DB_PATH} — customer-reviews tab will use seed data only`)
-  }
+  await initReviewsDb(REVIEWS_DB_PATH)
 
   // Serve static frontend in production
   if (process.env.NODE_ENV === 'production') {
@@ -145,9 +167,6 @@ async function start() {
   app.listen(PORT, () => {
     console.log(`[server] Listening on http://localhost:${PORT}`)
   })
-
-  // Fire-and-forget: trigger Agent 3 to process pending reviews on startup
-  triggerAgent3()
 
   // Fire-and-forget: trigger Agent 2 to pre-generate digest on startup
   triggerAgent2()

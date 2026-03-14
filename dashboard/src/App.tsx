@@ -213,8 +213,8 @@ function App() {
   }
 
 
-  // Agent 1 — Dashboard Explainer
-  const AGENT1_URL = 'http://localhost:8001'
+  // Agent 1 — Dashboard Explainer (proxied through dashboard server)
+  const AGENT1_API = '/api/chat'
 
   const handleSendMessage = async (content: string) => {
     const userMessage: ChatMessage = {
@@ -230,11 +230,11 @@ function App() {
     try {
       let response: string | null = null
 
-      // --- Try Agent 1 (Dashboard Explainer) ---
+      // --- Try Agent 1 (Dashboard Explainer) via server proxy ---
       try {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 30000)
-        const res = await fetch(`${AGENT1_URL}/chat`, {
+        const res = await fetch(AGENT1_API, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

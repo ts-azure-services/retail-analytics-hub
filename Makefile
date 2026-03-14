@@ -1112,7 +1112,7 @@ validate-fabric-endpoints: ## [util] Verify Fabric env vars are set on all conta
 	echo "Validating Fabric endpoints on container apps ($$RG)"; \
 	echo "══════════════════════════════════════════════════════════════"; \
 	for PAIR in \
-		"$$DASHBOARD_APP:FABRIC_SQL_ENDPOINT,FABRIC_KQL_CLUSTER_URI,FABRIC_KQL_DATABASE,FABRIC_KQL_TABLE" \
+		"$$DASHBOARD_APP:FABRIC_SQL_ENDPOINT,FABRIC_KQL_CLUSTER_URI,FABRIC_KQL_DATABASE,FABRIC_KQL_TABLE,AGENT1_URL,AGENT2_URL,AGENT3_URL" \
 		"$$AGENT1_APP:FABRIC_SQL_ENDPOINT" \
 		"$$AGENT2_APP:FABRIC_SQL_ENDPOINT" \
 		"$$AGENT3_APP:FABRIC_SQL_ENDPOINT,FABRIC_KQL_CLUSTER_URI,FABRIC_KQL_DATABASE,FABRIC_KQL_TABLE"; \
@@ -1275,51 +1275,18 @@ cloud-update: ## [util] Update all Container Apps from existing ACR images (skip
 	$(eval AGENT1_APP := $(shell terraform -chdir=infra/cloud output -raw agent1_app_name 2>/dev/null))
 	$(eval AGENT2_APP := $(shell terraform -chdir=infra/cloud output -raw agent2_app_name 2>/dev/null))
 	$(eval AGENT3_APP := $(shell terraform -chdir=infra/cloud output -raw agent3_app_name 2>/dev/null))
-	$(eval OPENAI_EP := $(shell terraform -chdir=infra/cloud output -raw openai_endpoint 2>/dev/null))
-	$(eval FABRIC_EP := $(shell terraform -chdir=infra/cloud output -raw fabric_sql_endpoint 2>/dev/null))
-	$(eval KQL_URI := $(shell grep -s FABRIC_KQL_CLUSTER_URI fabric.env 2>/dev/null | cut -d= -f2-))
-	$(eval KQL_DB := $(shell grep -s FABRIC_KQL_DATABASE fabric.env 2>/dev/null | cut -d= -f2-))
-	$(eval KQL_TABLE := $(shell grep -s FABRIC_KQL_TABLE fabric.env 2>/dev/null | cut -d= -f2-))
 	@if [ -z "$(ACR_SERVER)" ] || [ -z "$(RG)" ]; then \
 		echo "ERROR: Could not read Terraform outputs. Run 'make tf' first."; \
 		exit 1; \
 	fi
-	@echo "Configuring ACR registry on container apps..."
-	az containerapp registry set -n "$(DASHBOARD_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
-	az containerapp registry set -n "$(AGENT1_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
-	az containerapp registry set -n "$(AGENT2_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
-	az containerapp registry set -n "$(AGENT3_APP)" -g "$(RG)" --server "$(ACR_SERVER)" --identity system
-	@echo "Updating Container App images + probes + env vars..."
-	@sed -e 's|name: dashboard|name: dashboard\n        image: $(ACR_SERVER)/dashboard:latest|' \
-	     -e 's|__FABRIC_SQL_ENDPOINT__|$(FABRIC_EP)|g' \
-	     -e 's|__FABRIC_KQL_CLUSTER_URI__|$(KQL_URI)|g' \
-	     -e 's|__FABRIC_KQL_DATABASE__|$(KQL_DB)|g' \
-	     -e 's|__FABRIC_KQL_TABLE__|$(KQL_TABLE)|g' \
-	     -e 's|__AGENT1_APP__|$(AGENT1_APP)|g' \
-	     -e 's|__AGENT2_APP__|$(AGENT2_APP)|g' \
-	     -e 's|__AGENT3_APP__|$(AGENT3_APP)|g' \
-	     infra/cloud/probes/dashboard.yaml > /tmp/dashboard-probe.yaml
-	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --yaml /tmp/dashboard-probe.yaml
-	@sed -e 's|name: agent1|name: agent1\n        image: $(ACR_SERVER)/agent1-explainer:latest|' \
-	     -e 's|__FABRIC_SQL_ENDPOINT__|$(FABRIC_EP)|g' \
-	     -e 's|__AZURE_OPENAI_ENDPOINT__|$(OPENAI_EP)|g' \
-	     infra/cloud/probes/agent1.yaml > /tmp/agent1-probe.yaml
-	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --yaml /tmp/agent1-probe.yaml
-	@sed -e 's|name: agent2|name: agent2\n        image: $(ACR_SERVER)/agent2-narrative:latest|' \
-	     -e 's|__FABRIC_SQL_ENDPOINT__|$(FABRIC_EP)|g' \
-	     -e 's|__AZURE_OPENAI_ENDPOINT__|$(OPENAI_EP)|g' \
-	     infra/cloud/probes/agent2.yaml > /tmp/agent2-probe.yaml
-	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --yaml /tmp/agent2-probe.yaml
-	@sed -e 's|name: agent3|name: agent3\n        image: $(ACR_SERVER)/agent3-sentiment:latest|' \
-	     -e 's|__FABRIC_SQL_ENDPOINT__|$(FABRIC_EP)|g' \
-	     -e 's|__FABRIC_KQL_CLUSTER_URI__|$(KQL_URI)|g' \
-	     -e 's|__FABRIC_KQL_DATABASE__|$(KQL_DB)|g' \
-	     -e 's|__FABRIC_KQL_TABLE__|$(KQL_TABLE)|g' \
-	     -e 's|__AZURE_OPENAI_ENDPOINT__|$(OPENAI_EP)|g' \
-	     infra/cloud/probes/agent3.yaml > /tmp/agent3-probe.yaml
-	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --yaml /tmp/agent3-probe.yaml
-	@rm -f /tmp/dashboard-probe.yaml /tmp/agent1-probe.yaml /tmp/agent2-probe.yaml /tmp/agent3-probe.yaml
-	@echo "\033[0;32m✅ All Container Apps updated with probes + env vars!\033[0m"
+	$(eval REV_SUFFIX := v$(shell date +%s))
+	@echo "Updating Container App images (revision: $(REV_SUFFIX))..."
+	az containerapp update -n "$(DASHBOARD_APP)" -g "$(RG)" --image $(ACR_SERVER)/dashboard:latest --revision-suffix $(REV_SUFFIX)
+	az containerapp update -n "$(AGENT1_APP)" -g "$(RG)" --image $(ACR_SERVER)/agent1-explainer:latest --revision-suffix $(REV_SUFFIX)
+	az containerapp update -n "$(AGENT2_APP)" -g "$(RG)" --image $(ACR_SERVER)/agent2-narrative:latest --revision-suffix $(REV_SUFFIX)
+	az containerapp update -n "$(AGENT3_APP)" -g "$(RG)" --image $(ACR_SERVER)/agent3-sentiment:latest --revision-suffix $(REV_SUFFIX)
+	@echo "\033[0;32m✅ All Container Apps updated with new images! (revision: $(REV_SUFFIX))\033[0m"
+	@echo "\033[0;33m💡 Run 'make update-fabric-endpoints' to set Fabric connection strings.\033[0m"
 
 cloud-deploy: cloud-build ## [core] Build all images in ACR + update all Container Apps
 	$(MAKE) cloud-update

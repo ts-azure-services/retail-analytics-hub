@@ -1,8 +1,10 @@
 import { Database } from 'duckdb-async'
 import pg from 'pg'
+import { Connection, Request, TYPES } from 'tedious'
 import { getQueriesForTab, type SqlDialect } from '../shared/metric-queries.js'
 
 const FABRIC_SQL_ENDPOINT = process.env.FABRIC_SQL_ENDPOINT || ''
+const FABRIC_SQL_DATABASE = process.env.FABRIC_SQL_DATABASE || 'postgres-mirror'
 const FABRIC_KQL_CLUSTER_URI = process.env.FABRIC_KQL_CLUSTER_URI || ''
 const FABRIC_KQL_DATABASE = process.env.FABRIC_KQL_DATABASE || ''
 const FABRIC_KQL_TABLE = process.env.FABRIC_KQL_TABLE || 'CustomerReviews'
@@ -20,18 +22,71 @@ export interface MetricResult {
 let db: Database | null = null
 let reviewsDb: Database | null = null
 
-// ── Postgres pool (Fabric cloud) ────────────────────────────────
+// ── Postgres pool (local dev) ───────────────────────────────────
 let pgPool: pg.Pool | null = null
 
 // ── KQL client (Fabric RTI for reviews) ─────────────────────────
 let kustoClient: any = null
 
+/**
+ * Create a tedious Connection to the Fabric SQL endpoint using
+ * ActiveDirectoryDefault auth (picks up Managed Identity in Container Apps).
+ */
+function createFabricSqlConnection(): Promise<Connection> {
+  return new Promise((resolve, reject) => {
+    const config = {
+      server: FABRIC_SQL_ENDPOINT,
+      authentication: {
+        type: 'azure-active-directory-default' as const,
+      },
+      options: {
+        database: FABRIC_SQL_DATABASE,
+        encrypt: true,
+        trustServerCertificate: false,
+        port: 1433,
+      },
+    }
+    const conn = new Connection(config)
+    conn.on('connect', (err) => {
+      if (err) reject(err)
+      else resolve(conn)
+    })
+    conn.connect()
+  })
+}
+
+/** Execute a SQL query via tedious and return rows as objects. */
+function fabricSqlQuery(sql: string): Promise<Record<string, unknown>[]> {
+  return new Promise(async (resolve, reject) => {
+    let conn: Connection
+    try {
+      conn = await createFabricSqlConnection()
+    } catch (err) {
+      return reject(err)
+    }
+    const rows: Record<string, unknown>[] = []
+    const request = new Request(sql, (err) => {
+      conn.close()
+      if (err) reject(err)
+      else resolve(rows)
+    })
+    request.on('row', (columns) => {
+      const obj: Record<string, unknown> = {}
+      for (const col of columns) {
+        obj[col.metadata.colName] = col.value
+      }
+      rows.push(obj)
+    })
+    conn.execSql(request)
+  })
+}
+
 export async function initDb(dbPath: string): Promise<void> {
   if (FABRIC_SQL_ENDPOINT) {
-    if (!pgPool) {
-      pgPool = new pg.Pool({ connectionString: FABRIC_SQL_ENDPOINT })
-      console.log('[query-executor] Connected to Fabric SQL endpoint')
-    }
+    // Verify connectivity to Fabric SQL endpoint — fail-fast if unreachable
+    const conn = await createFabricSqlConnection()
+    conn.close()
+    console.log(`[query-executor] Connected to Fabric SQL: ${FABRIC_SQL_ENDPOINT} / ${FABRIC_SQL_DATABASE}`)
     return
   }
   db = await Database.create(dbPath, { access_mode: 'READ_ONLY' })
@@ -41,17 +96,13 @@ export async function initDb(dbPath: string): Promise<void> {
 export async function initReviewsDb(dbPath: string): Promise<void> {
   if (FABRIC_KQL_CLUSTER_URI) {
     // KQL mode — connect to Fabric Real-Time Intelligence
-    try {
-      const { DefaultAzureCredential } = await import('@azure/identity')
-      const { KustoClient, KustoConnectionStringBuilder } = await import('azure-kusto-data')
-      const credential = new DefaultAzureCredential()
-      const kcsb = KustoConnectionStringBuilder.withAadManagedIdentities(FABRIC_KQL_CLUSTER_URI)
-      kustoClient = new KustoClient(kcsb)
-      console.log(`[query-executor] Connected to KQL: ${FABRIC_KQL_CLUSTER_URI} / ${FABRIC_KQL_DATABASE}`)
-    } catch (err) {
-      console.warn('[query-executor] KQL client init failed, falling back to DuckDB:', err)
-      reviewsDb = await Database.create(dbPath, { access_mode: 'READ_ONLY' })
-    }
+    // In cloud mode this MUST succeed; no DuckDB fallback.
+    const { DefaultAzureCredential } = await import('@azure/identity')
+    const { Client: KustoClient, KustoConnectionStringBuilder } = await import('azure-kusto-data')
+    const credential = new DefaultAzureCredential()
+    const kcsb = KustoConnectionStringBuilder.withTokenCredential(FABRIC_KQL_CLUSTER_URI, credential)
+    kustoClient = new KustoClient(kcsb)
+    console.log(`[query-executor] Connected to KQL: ${FABRIC_KQL_CLUSTER_URI} / ${FABRIC_KQL_DATABASE}`)
     return
   }
   // Local mode — use DuckDB
@@ -82,8 +133,13 @@ export async function closeReviewsDb(): Promise<void> {
 
 /** Run a single SQL query via the active driver. */
 async function queryRows(sql: string, useReviewsDb = false): Promise<Record<string, unknown>[]> {
-  // Reviews always use the bundled DuckDB (even in cloud mode)
+  // Reviews: KQL in cloud, DuckDB locally
   if (useReviewsDb) {
+    if (kustoClient) {
+      // Cloud mode — reviews queries should go through queryKql(), not here.
+      // If we reach here it means a SQL query was passed for reviews in cloud mode.
+      throw new Error('Reviews in cloud mode must use KQL path, not SQL')
+    }
     if (!reviewsDb) throw new Error('Reviews database not initialised')
     const conn = await reviewsDb.connect()
     try {
@@ -91,6 +147,10 @@ async function queryRows(sql: string, useReviewsDb = false): Promise<Record<stri
     } finally {
       await conn.close()
     }
+  }
+  // Fabric SQL (cloud) — tedious/TDS
+  if (FABRIC_SQL_ENDPOINT) {
+    return fabricSqlQuery(sql)
   }
   if (pgPool) {
     const { rows } = await pgPool.query(sql)
@@ -132,7 +192,8 @@ export async function executeTabMetrics(tabId: string): Promise<MetricResult[]> 
   if (queries.length === 0) return []
 
   const isReviews = tabId === 'customer-reviews'
-  if (!pgPool && !(isReviews ? reviewsDb : db)) throw new Error('Database not initialised')
+  // In cloud mode Fabric SQL is used via tedious (no pgPool/db needed)
+  if (!FABRIC_SQL_ENDPOINT && !pgPool && !(isReviews ? reviewsDb : db)) throw new Error('Database not initialised')
 
   const results = await Promise.allSettled(
     queries.map(async (q): Promise<MetricResult> => {
@@ -223,7 +284,7 @@ export async function executeReviewsQuery(filter: string): Promise<ReviewRecord[
     return executeReviewsQueryViaKql(filter)
   }
 
-  if (!pgPool && !reviewsDb) throw new Error('Reviews database not initialised')
+  if (!reviewsDb) throw new Error('Reviews database not initialised')
 
   let sql = `SELECT id, review_text, sentiment_category, sentiment_score,
                     status, chatbot_statement, created_at, processed_at

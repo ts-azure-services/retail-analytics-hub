@@ -334,8 +334,16 @@ CREATE TABLE customer_reviews (
 
 ```
 ┌─────────────────────────┐
-│       Dashboard         │
+│    Browser (Frontend)   │
 │  (React + Vite, :5173)  │
+└────────────┬────────────┘
+             │  /api/chat, /api/digest/generate
+             ▼
+┌─────────────────────────┐
+│   Dashboard Server      │
+│  (Express, :3001)       │
+│  Proxies to agents via  │
+│  AGENT*_URL env vars    │
 └────┬──────┬──────┬──────┘
      │      │      │
      ▼      ▼      ▼
@@ -346,13 +354,22 @@ CREATE TABLE customer_reviews (
   MCP Server (subprocess, stdio)
      │
      ▼
-  Database (DuckDB / Fabric SQL)
+  Database (DuckDB / Fabric SQL / KQL)
 ```
 
-- **Dashboard → Agents**: HTTP REST (JSON). Each agent is a standalone FastAPI service.
+> **Key design**: The frontend never talks to agents directly — it always goes through the dashboard server, and the server uses env vars with localhost defaults. This works identically in both local development and cloud deployment without any code changes.
+
+| Env Var | Default (local) | Cloud (set by Terraform) |
+|---------|----------------|--------------------------|
+| `AGENT1_URL` | `http://localhost:8001` | `https://ca-agent1-....internal.<domain>` |
+| `AGENT2_URL` | `http://localhost:8002` | `https://ca-agent2-....internal.<domain>` |
+| `AGENT3_URL` | `http://localhost:8003` | `https://ca-agent3-....internal.<domain>` |
+
+- **Browser → Dashboard Server**: The frontend uses relative URLs (`/api/chat`, `/api/digest/generate`) so requests always hit the dashboard server regardless of environment.
+- **Dashboard Server → Agents**: The server proxies to agents using `AGENT*_URL` env vars. In local dev these default to `localhost`; in cloud, Terraform sets them to internal Container App FQDNs.
 - **Agents → MCP Server**: Agents 1 and 2 spawn the MCP server as a subprocess and communicate over stdio using the Model Context Protocol.
 - **Agents → Database**: Agent 3 writes directly to DuckDB. Agents 1 and 2 read data indirectly through MCP tools.
-- **No direct agent-to-agent communication**: The agents are independent; the dashboard orchestrates which agent to call.
+- **No direct agent-to-agent communication**: The agents are independent; the dashboard server orchestrates which agent to call.
 
 ---
 

@@ -164,12 +164,20 @@ def _get_metrics_summary_kql() -> dict:
         for metric_id, meta in _METRIC_KQL.items():
             kql = meta["kql"](table)
             rows = execute_kql_query(client, kql)
-            value = rows[0].get("value") if rows and "value" in rows[0] else None
-            results[metric_id] = {
-                "label": meta["label"],
-                "value": value,
-                "format": meta["format"],
-            }
+            if rows and "error" in rows[0]:
+                results[metric_id] = {
+                    "label": meta["label"],
+                    "value": None,
+                    "format": meta["format"],
+                    "error": rows[0]["error"],
+                }
+            else:
+                value = rows[0].get("value") if rows and "value" in rows[0] else None
+                results[metric_id] = {
+                    "label": meta["label"],
+                    "value": value,
+                    "format": meta["format"],
+                }
         return {"tab": "customer-reviews", "metrics": results}
     finally:
         client.close()

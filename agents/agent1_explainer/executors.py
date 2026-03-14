@@ -2,6 +2,7 @@
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing_extensions import Never
 
@@ -57,28 +58,55 @@ async def gather_data(response: AgentExecutorResponse, ctx: WorkflowContext[str]
     metric_ids = intent.get("metric_ids", [])
     question_type = intent.get("question_type", "general")
 
-    gathered = {"intent": intent, "data": {}}
-
-    # 1. Summary tool for the classified tab
     tab_tools = TAB_TOOL_MAP.get(tab, TAB_TOOL_MAP.get("main", {}))
+
+    # Fall back to all metrics for the tab when the classifier returns none
+    if not metric_ids:
+        metric_ids = tab_tools.get("metric_ids", [])
+
+    gathered: dict = {"intent": intent, "data": {}}
+
+    # Build a list of (result_key, tool_name, kwargs) to run in parallel
+    tasks: list[tuple[str, str, dict]] = []
+
+    # 1. Summary tool
     summary_tool = tab_tools.get("summary")
     if summary_tool:
-        gathered["data"]["summary"] = call_tool(summary_tool)
+        tasks.append(("summary", summary_tool, {}))
 
     # 2. Driver tool for each metric_id
     driver_tool = tab_tools.get("drivers")
     if driver_tool and metric_ids:
-        gathered["data"]["drivers"] = {}
         for mid in metric_ids:
-            gathered["data"]["drivers"][mid] = call_tool(driver_tool, metric_id=mid)
+            tasks.append((f"drivers.{mid}", driver_tool, {"metric_id": mid}))
 
     # 3. Extra tools for comparison/analysis questions
     if question_type in ("comparison", "general"):
-        extras = tab_tools.get("extra", [])
-        if extras:
-            gathered["data"]["extras"] = {}
-            for tool_name in extras:
-                gathered["data"]["extras"][tool_name] = call_tool(tool_name)
+        for tool_name in tab_tools.get("extra", []):
+            tasks.append((f"extras.{tool_name}", tool_name, {}))
+
+    # Execute all tool calls concurrently
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as pool:
+        future_map = {
+            pool.submit(call_tool, tool_name, **kwargs): result_key
+            for result_key, tool_name, kwargs in tasks
+        }
+        for future in as_completed(future_map):
+            result_key = future_map[future]
+            results[result_key] = future.result()
+
+    # Assemble results into the expected structure
+    if "summary" in results:
+        gathered["data"]["summary"] = results.pop("summary")
+
+    drivers = {k.split(".", 1)[1]: v for k, v in results.items() if k.startswith("drivers.")}
+    if drivers:
+        gathered["data"]["drivers"] = drivers
+
+    extras = {k.split(".", 1)[1]: v for k, v in results.items() if k.startswith("extras.")}
+    if extras:
+        gathered["data"]["extras"] = extras
 
     data_text = json.dumps(gathered, default=str)
     logger.info("Gathered data for tab=%s metrics=%s (%d chars)", tab, metric_ids, len(data_text))

@@ -8,10 +8,13 @@ Supports three backends:
 
 from __future__ import annotations
 
+import logging
 import duckdb
 from pathlib import Path
 
 from .config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── DuckDB helpers (local) ───────────────────────────────────────
@@ -46,17 +49,33 @@ def _fabric_connection():
     return mssql_connect(conn_str)
 
 
+_credential = None
+_kusto_client = None
+
+
+def _get_credential():
+    """Return a cached DefaultAzureCredential instance."""
+    global _credential
+    if _credential is None:
+        from azure.identity import DefaultAzureCredential
+        _credential = DefaultAzureCredential()
+    return _credential
+
+
 def _kql_connection():
-    """Return a KustoClient connected to the Fabric KQL endpoint."""
-    from azure.identity import DefaultAzureCredential
+    """Return a cached KustoClient connected to the Fabric KQL endpoint."""
+    global _kusto_client
+    if _kusto_client is not None:
+        return _kusto_client
+
     from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 
     settings = get_settings()
-    credential = DefaultAzureCredential()
     kcsb = KustoConnectionStringBuilder.with_azure_token_credential(
-        settings.fabric_kql_cluster_uri, credential
+        settings.fabric_kql_cluster_uri, _get_credential()
     )
-    return KustoClient(kcsb)
+    _kusto_client = KustoClient(kcsb)
+    return _kusto_client
 
 
 # ── Public connection getters ────────────────────────────────────
@@ -158,4 +177,5 @@ def execute_kql_query(
             for row in rows
         ]
     except Exception as e:
+        logger.error("KQL query failed: %s | query: %s", e, kql[:200])
         return [{"error": str(e)}]

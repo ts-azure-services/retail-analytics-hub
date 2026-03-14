@@ -55,7 +55,7 @@ function App() {
   const autoQueriedTabsRef = useRef<Set<string>>(new Set())
 
   // Digest tab state (Agent 2)
-  const AGENT2_URL = 'http://localhost:8002'
+  const AGENT2_API = '/api/digest/generate'
   const [digestNarrative, setDigestNarrative] = useKV<string | null>('digest-narrative', null)
   const [digestLoading, setDigestLoading] = useState(false)
   const [digestLastGenerated, setDigestLastGenerated] = useState<Date | null>(null)
@@ -103,31 +103,36 @@ function App() {
   const handleGenerateDigest = async () => {
     setDigestLoading(true)
     try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 300000)
-      const res = await fetch(`${AGENT2_URL}/narrative`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: 'Generate a comprehensive business narrative covering revenue, operations, customer engagement, and inventory health.',
-          session_id: `digest-${Date.now()}`,
-          focus_areas: ['revenue', 'operations', 'customer', 'inventory'],
-        }),
-        signal: controller.signal,
-      })
-      clearTimeout(timeout)
-      if (res.ok) {
-        const data = await res.json()
-        setDigestNarrative(data.narrative || data.summary || 'No narrative returned.')
-        setDigestLastGenerated(new Date())
-        toast.success('Digest generated')
-      } else {
-        toast.error('Agent 2 returned an error. Please try again.')
+      const res = await fetch(AGENT2_API, { method: 'POST' })
+      if (!res.ok) {
+        toast.error('Failed to trigger digest generation.')
+        setDigestLoading(false)
+        return
       }
+      // Poll /api/digest until ready (server calls Agent 2 in the background)
+      const poll = setInterval(async () => {
+        try {
+          const pollRes = await fetch('/api/digest')
+          if (pollRes.ok) {
+            const data = await pollRes.json()
+            if (data.status === 'ready') {
+              clearInterval(poll)
+              setDigestNarrative(data.narrative || data.summary || 'No narrative returned.')
+              setDigestLastGenerated(new Date(data.generated_at || Date.now()))
+              setDigestLoading(false)
+              toast.success('Digest generated')
+            }
+          }
+        } catch { /* keep polling */ }
+      }, 3000)
+      // Timeout after 5 min
+      setTimeout(() => {
+        clearInterval(poll)
+        setDigestLoading(false)
+      }, 300_000)
     } catch (error) {
-      toast.error('Could not reach Agent 2. Make sure it is running on port 8002.')
+      toast.error('Could not reach the server.')
       console.error('Digest generation error:', error)
-    } finally {
       setDigestLoading(false)
     }
   }

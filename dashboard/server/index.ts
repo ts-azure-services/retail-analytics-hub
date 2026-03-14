@@ -91,6 +91,15 @@ app.get('/api/digest', (_req, res) => {
   }
 })
 
+app.post('/api/digest/generate', async (_req, res) => {
+  if (digestGenerating) {
+    res.json({ status: 'generating' })
+    return
+  }
+  triggerAgent2()
+  res.json({ status: 'generating' })
+})
+
 async function triggerAgent2() {
   try {
     digestGenerating = true

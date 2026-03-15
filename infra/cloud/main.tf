@@ -1408,6 +1408,14 @@ resource "azurerm_container_app" "dashboard" {
         name  = "FABRIC_KQL_TABLE"
         value = var.fabric_kql_table
       }
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+      env {
+        name  = "OTEL_SERVICE_NAME"
+        value = "dashboard"
+      }
 
       liveness_probe {
         transport               = "HTTP"
@@ -1498,6 +1506,14 @@ resource "azurerm_container_app" "agent1" {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = azurerm_cognitive_account.openai.endpoint
       }
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+      env {
+        name  = "OTEL_SERVICE_NAME"
+        value = "agent1-explainer"
+      }
 
       liveness_probe {
         transport               = "HTTP"
@@ -1587,6 +1603,14 @@ resource "azurerm_container_app" "agent2" {
       env {
         name  = "AZURE_OPENAI_ENDPOINT"
         value = azurerm_cognitive_account.openai.endpoint
+      }
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+      env {
+        name  = "OTEL_SERVICE_NAME"
+        value = "agent2-narrative"
       }
 
       liveness_probe {
@@ -1690,6 +1714,14 @@ resource "azurerm_container_app" "agent3" {
         name  = "FABRIC_KQL_TABLE"
         value = var.fabric_kql_table
       }
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+      env {
+        name  = "OTEL_SERVICE_NAME"
+        value = "agent3-sentiment"
+      }
 
       liveness_probe {
         transport               = "HTTP"
@@ -1786,6 +1818,20 @@ resource "azurerm_log_analytics_workspace" "example" {
   resource_group_name = azurerm_resource_group.example.name
   sku                 = "PerGB2018"
   retention_in_days   = 30
+
+  tags = local.common_tags
+}
+
+# =============================================================================
+# APPLICATION INSIGHTS — APM telemetry for agents + dashboard
+# =============================================================================
+
+resource "azurerm_application_insights" "main" {
+  name                = "appi-fabric-${random_string.suffix.result}"
+  location            = azurerm_resource_group.example.location
+  resource_group_name = azurerm_resource_group.example.name
+  workspace_id        = azurerm_log_analytics_workspace.example.id
+  application_type    = "other"
 
   tags = local.common_tags
 }
@@ -2066,6 +2112,20 @@ output "log_analytics_workspace_name" {
 output "log_analytics_workspace_id" {
   value       = azurerm_log_analytics_workspace.example.workspace_id
   description = "The workspace ID of the Log Analytics workspace"
+}
+
+# Application Insights Connection String
+output "appinsights_connection_string" {
+  value       = azurerm_application_insights.main.connection_string
+  description = "The connection string for Application Insights (OTLP export)"
+  sensitive   = true
+}
+
+# Application Insights Instrumentation Key
+output "appinsights_instrumentation_key" {
+  value       = azurerm_application_insights.main.instrumentation_key
+  description = "The instrumentation key for Application Insights"
+  sensitive   = true
 }
 
 # Container Registry Name

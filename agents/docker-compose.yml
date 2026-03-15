@@ -1,4 +1,13 @@
 services:
+  aspire-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+    ports:
+      - "18888:18888"
+      - "4317:18889"
+    environment:
+      - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+    restart: unless-stopped
+
   agent1-explainer:
     build:
       context: ..
@@ -13,6 +22,8 @@ services:
       - LOCAL_POSTGRES_DB=/data/local_postgres.duckdb
       - LOCAL_COSMOS_DB=/data/local_cosmos.duckdb
       - EVENT_HUBS_DB=/data/event_hubs.duckdb
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://aspire-dashboard:18889
+      - OTEL_SERVICE_NAME=agent1-explainer
     volumes:
       - ../local_postgres.duckdb:/data/local_postgres.duckdb:ro
       - ../local_cosmos.duckdb:/data/local_cosmos.duckdb:ro
@@ -38,6 +49,8 @@ services:
       - AGENT_TEMPERATURE=0.3
       - LOCAL_POSTGRES_DB=/data/local_postgres.duckdb
       - LOCAL_COSMOS_DB=/data/local_cosmos.duckdb
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://aspire-dashboard:18889
+      - OTEL_SERVICE_NAME=agent2-narrative
     volumes:
       - ../local_postgres.duckdb:/data/local_postgres.duckdb:ro
       - ../local_cosmos.duckdb:/data/local_cosmos.duckdb:ro
@@ -60,6 +73,8 @@ services:
     environment:
       - AGENT_MODEL=gpt-4o-mini
       - EVENT_HUBS_DB=/data/event_hubs.duckdb
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://aspire-dashboard:18889
+      - OTEL_SERVICE_NAME=agent3-sentiment
     volumes:
       - ../event_hubs.duckdb:/data/event_hubs.duckdb
     healthcheck:

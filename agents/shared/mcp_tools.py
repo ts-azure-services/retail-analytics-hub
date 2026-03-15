@@ -10,6 +10,8 @@ import logging
 import time
 from typing import Callable
 
+from opentelemetry import trace
+
 from agents.mcp_server.tools import (
     main_tab,
     omnichannel_tab,
@@ -21,6 +23,7 @@ from agents.mcp_server.tools import (
 )
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 # ── Tool registry ────────────────────────────────────────────────
 
@@ -75,13 +78,20 @@ def call_tool(name: str, **kwargs) -> dict:
             logger.debug("Cache hit for %s (age %.1fs)", name, now - ts)
             return result
 
-    try:
-        result = registry[name](**kwargs)
-        _TOOL_CACHE[key] = (now, result)
-        return result
-    except Exception as e:
-        logger.exception("Tool %s failed", name)
-        return {"error": f"Tool {name} failed: {e}"}
+    with _tracer.start_as_current_span(
+        "mcp.tool.call",
+        attributes={"mcp.tool.name": name, "mcp.tool.cached": False},
+    ) as span:
+        try:
+            result = registry[name](**kwargs)
+            span.set_attribute("mcp.tool.success", True)
+            _TOOL_CACHE[key] = (now, result)
+            return result
+        except Exception as e:
+            span.set_attribute("mcp.tool.success", False)
+            span.record_exception(e)
+            logger.exception("Tool %s failed", name)
+            return {"error": f"Tool {name} failed: {e}"}
 
 
 # ── Tab → tool name mapping ─────────────────────────────────────

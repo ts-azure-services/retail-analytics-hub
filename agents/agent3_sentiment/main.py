@@ -17,6 +17,7 @@ from agents.shared.models import (
 )
 from agents.agent3_sentiment import db
 from agents.agent3_sentiment.workflow_manager import analyze_review
+from agents.shared.telemetry import configure_telemetry
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -66,6 +67,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+configure_telemetry(app, service_name="agent3-sentiment")
 
 app.add_middleware(
     CORSMiddleware,

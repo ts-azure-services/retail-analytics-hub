@@ -6,11 +6,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from typing_extensions import Never
 
+from opentelemetry import context as otel_context, trace
+
 from agent_framework import executor, AgentExecutorResponse, WorkflowContext
 
 from agents.shared.mcp_tools import call_tool, TAB_TOOL_MAP
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 _SOURCE = "agent1-explainer"
 
@@ -85,16 +88,26 @@ async def gather_data(response: AgentExecutorResponse, ctx: WorkflowContext[str]
         for tool_name in tab_tools.get("extra", []):
             tasks.append((f"extras.{tool_name}", tool_name, {}))
 
-    # Execute all tool calls concurrently
+    # Execute all tool calls concurrently with OTEL context propagation
     results: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as pool:
-        future_map = {
-            pool.submit(call_tool, tool_name, **kwargs): result_key
-            for result_key, tool_name, kwargs in tasks
-        }
-        for future in as_completed(future_map):
-            result_key = future_map[future]
-            results[result_key] = future.result()
+    parent_ctx = otel_context.get_current()
+
+    def _call_with_context(tool_name: str, **kw) -> dict:
+        token = otel_context.attach(parent_ctx)
+        try:
+            return call_tool(tool_name, **kw)
+        finally:
+            otel_context.detach(token)
+
+    with _tracer.start_as_current_span("gather_data.parallel_tools", attributes={"tool.count": len(tasks)}):
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 8)) as pool:
+            future_map = {
+                pool.submit(_call_with_context, tool_name, **kwargs): result_key
+                for result_key, tool_name, kwargs in tasks
+            }
+            for future in as_completed(future_map):
+                result_key = future_map[future]
+                results[result_key] = future.result()
 
     # Assemble results into the expected structure
     if "summary" in results:

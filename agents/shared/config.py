@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     query_row_limit: int = 1000
     query_timeout_seconds: int = 10
 
+    # ── Telemetry (OTEL) ──────────────────────────────────────────
+    applicationinsights_connection_string: str = ""
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "unknown-service"
+
 
 @lru_cache
 def get_settings() -> Settings:

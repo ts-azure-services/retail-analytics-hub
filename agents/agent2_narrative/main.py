@@ -18,6 +18,7 @@ from agents.shared.models import (
     NarrativeRequest, NarrativeResponse,
     HealthResponse,
 )
+from agents.shared.telemetry import configure_telemetry
 from .workflow_manager import run_narrative_pipeline, run_chat_pipeline, stream_chat_pipeline
 
 app = FastAPI(
@@ -25,6 +26,8 @@ app = FastAPI(
     description="Deep business analysis and executive narratives using multi-agent pipeline",
     version="0.1.0",
 )
+
+configure_telemetry(app, service_name="agent2-narrative")
 
 app.add_middleware(
     CORSMiddleware,

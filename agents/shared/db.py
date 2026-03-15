@@ -12,19 +12,25 @@ import logging
 import duckdb
 from pathlib import Path
 
+from opentelemetry import trace
+
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 # ── DuckDB helpers (local) ───────────────────────────────────────
 
 def _connect(path: str) -> duckdb.DuckDBPyConnection:
     """Open a read-only DuckDB connection and validate the file exists."""
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"DuckDB file not found: {path}")
-    return duckdb.connect(str(p), read_only=True)
+    with _tracer.start_as_current_span(
+        "db.connect", attributes={"db.system": "duckdb", "db.name": path}
+    ):
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"DuckDB file not found: {path}")
+        return duckdb.connect(str(p), read_only=True)
 
 
 # ── Fabric helpers (cloud) ───────────────────────────────────────
@@ -36,17 +42,20 @@ def _fabric_connection():
     hostname) and FABRIC_SQL_DATABASE, using ActiveDirectoryDefault auth
     which picks up the Managed Identity token in Container Apps.
     """
-    from mssql_python import connect as mssql_connect
+    with _tracer.start_as_current_span(
+        "db.connect", attributes={"db.system": "mssql", "db.name": "fabric-sql"}
+    ):
+        from mssql_python import connect as mssql_connect
 
-    settings = get_settings()
-    conn_str = (
-        f"Server={settings.fabric_sql_endpoint},1433;"
-        f"Database={settings.fabric_sql_database};"
-        "Encrypt=yes;"
-        "TrustServerCertificate=no;"
-        "Authentication=ActiveDirectoryDefault;"
-    )
-    return mssql_connect(conn_str)
+        settings = get_settings()
+        conn_str = (
+            f"Server={settings.fabric_sql_endpoint},1433;"
+            f"Database={settings.fabric_sql_database};"
+            "Encrypt=yes;"
+            "TrustServerCertificate=no;"
+            "Authentication=ActiveDirectoryDefault;"
+        )
+        return mssql_connect(conn_str)
 
 
 _credential = None

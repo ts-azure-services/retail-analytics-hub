@@ -21,6 +21,13 @@ dependencies = [
     "azure-kusto-data>=6.0.2",
     "azure-identity>=1.25.2",
     "pymssql>=2.3.13",
+    "opentelemetry-api>=1.25.0,<1.39.0",
+    "opentelemetry-sdk>=1.25.0,<1.39.0",
+    "opentelemetry-instrumentation-fastapi>=0.46b0,<0.60b0",
+    "opentelemetry-instrumentation-httpx>=0.46b0,<0.60b0",
+    "opentelemetry-instrumentation-logging>=0.46b0,<0.60b0",
+    "opentelemetry-exporter-otlp>=1.25.0,<1.39.0",
+    "azure-monitor-opentelemetry-exporter>=1.0.0b21",
 ]
 
 [project.optional-dependencies]

@@ -494,6 +494,17 @@ agents-down: ## [core] Stop agent services
 agents-logs: ## [util] Tail agent service logs
 	docker compose -f agents/docker-compose.yml logs -f
 
+aspire-up: ## [core] Start Aspire dashboard only (OTEL trace viewer on http://localhost:18888)
+	docker compose -f agents/docker-compose.yml up -d aspire-dashboard
+	@echo "🔭 Aspire Dashboard: http://localhost:18888"
+
+aspire-down: ## [util] Stop Aspire dashboard
+	docker compose -f agents/docker-compose.yml stop aspire-dashboard
+	docker compose -f agents/docker-compose.yml rm -f aspire-dashboard
+
+aspire-logs: ## [util] Tail Aspire dashboard logs
+	docker compose -f agents/docker-compose.yml logs -f aspire-dashboard
+
 # agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
 # 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
 #

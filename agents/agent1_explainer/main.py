@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 from agents.shared.models import ChatRequest, ChatResponse, HealthResponse
+from agents.shared.telemetry import configure_telemetry
 from .workflow_manager import run_explainer_pipeline, stream_explainer_pipeline
 
 app = FastAPI(
@@ -21,6 +22,8 @@ app = FastAPI(
     description="Answers tab-level questions about retail metrics using multi-agent pipeline",
     version="0.1.0",
 )
+
+configure_telemetry(app, service_name="agent1-explainer")
 
 app.add_middleware(
     CORSMiddleware,

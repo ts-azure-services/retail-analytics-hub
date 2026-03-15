@@ -8,6 +8,7 @@ import { ChatMessage } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Skeleton } from '@/components/ui/skeleton'
+import { MarkdownText } from './MarkdownText'
 
 interface ChatInterfaceProps {
   messages: ChatMessage[]
@@ -93,9 +94,13 @@ export function ChatInterface({ messages, onSendMessage, isLoading, onRefresh }:
                         : "bg-card border border-border"
                     )}
                   >
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                      {message.content}
-                    </p>
+                    {message.role === 'assistant' ? (
+                      <MarkdownText content={message.content} compact />
+                    ) : (
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                        {message.content}
+                      </p>
+                    )}
                     <span className={cn(
                       "text-xs mt-1.5 block",
                       message.role === 'user' ? "text-primary-foreground/70" : "text-muted-foreground"

@@ -4,6 +4,7 @@ import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ArrowClockwise, Lightning } from '@phosphor-icons/react'
+import { MarkdownText } from './MarkdownText'
 
 interface DigestViewProps {
   narrative: string | null
@@ -86,36 +87,8 @@ export function DigestView({ narrative, isLoading, onGenerate, lastGenerated }: 
               </div>
             )}
             <ScrollArea className="h-full">
-              <div className="p-8 prose prose-sm dark:prose-invert max-w-none">
-                {narrative.split('\n').map((line, i) => {
-                  const trimmed = line.trim()
-                  if (!trimmed) return <div key={i} className="h-3" />
-                  if (trimmed.startsWith('## '))
-                    return <h2 key={i} className="text-xl font-bold mt-6 mb-3 font-space">{trimmed.slice(3)}</h2>
-                  if (trimmed.startsWith('### '))
-                    return <h3 key={i} className="text-lg font-semibold mt-4 mb-2 font-space">{trimmed.slice(4)}</h3>
-                  if (trimmed.startsWith('#### '))
-                    return <h4 key={i} className="text-base font-semibold mt-3 mb-1.5 font-space">{renderInlineBold(trimmed.slice(5))}</h4>
-                  if (trimmed.startsWith('**') && trimmed.endsWith('**'))
-                    return <p key={i} className="font-semibold mt-4 mb-1">{trimmed.slice(2, -2)}</p>
-                  if (trimmed.startsWith('- ') || trimmed.startsWith('* '))
-                    return (
-                      <div key={i} className="flex gap-2 ml-2 mb-1.5">
-                        <span className="text-primary mt-0.5 shrink-0">-</span>
-                        <p className="text-sm leading-relaxed">{renderInlineBold(trimmed.slice(2))}</p>
-                      </div>
-                    )
-                  if (/^\d+\.\s/.test(trimmed)) {
-                    const match = trimmed.match(/^(\d+)\.\s(.*)/)
-                    return (
-                      <div key={i} className="flex gap-2 ml-2 mb-1.5">
-                        <span className="text-primary font-medium mt-0.5 shrink-0">{match?.[1]}.</span>
-                        <p className="text-sm leading-relaxed">{renderInlineBold(match?.[2] || '')}</p>
-                      </div>
-                    )
-                  }
-                  return <p key={i} className="text-sm leading-relaxed mb-2">{renderInlineBold(trimmed)}</p>
-                })}
+              <div className="p-8">
+                <MarkdownText content={narrative} />
               </div>
             </ScrollArea>
           </Card>
@@ -123,15 +96,4 @@ export function DigestView({ narrative, isLoading, onGenerate, lastGenerated }: 
       </div>
     </div>
   )
-}
-
-/** Render **bold** spans within a line of text. */
-function renderInlineBold(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/)
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i}>{part.slice(2, -2)}</strong>
-    }
-    return <span key={i}>{part}</span>
-  })
 }

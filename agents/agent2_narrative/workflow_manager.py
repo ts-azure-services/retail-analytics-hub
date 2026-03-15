@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
 
 from agent_framework import WorkflowBuilder, WorkflowOutputEvent
 
@@ -80,3 +82,50 @@ async def run_chat_pipeline(request: ChatRequest) -> str:
         "current_view": request.current_view,
         "selected_metric_id": request.selected_metric_id,
     })
+
+
+async def stream_chat_pipeline(
+    request: ChatRequest,
+) -> AsyncGenerator[dict[str, str], None]:
+    """Run the chat pipeline and yield SSE events.
+
+    Events emitted:
+      event=status  – pipeline stage progress
+      event=chunk   – partial response text
+      event=done    – final complete response + metadata
+      event=error   – error message
+    """
+    yield {"event": "status", "data": json.dumps({"stage": "processing", "message": "Synthesizing narrative…"})}
+
+    try:
+        response_text = await run_chat_pipeline(request)
+    except Exception as exc:
+        logger.exception("Streaming chat pipeline error")
+        yield {"event": "error", "data": json.dumps({"message": str(exc)})}
+        return
+
+    words = response_text.split(" ")
+    buffer = ""
+    for i, word in enumerate(words):
+        buffer += (" " if buffer else "") + word
+        at_end = i == len(words) - 1
+        if len(buffer) >= 25 or word.endswith((".", "!", "?", ":", "\n")) or at_end:
+            yield {"event": "chunk", "data": buffer}
+            buffer = ""
+            if not at_end:
+                await asyncio.sleep(0.015)
+
+    if buffer:
+        yield {"event": "chunk", "data": buffer}
+
+    yield {
+        "event": "done",
+        "data": json.dumps({
+            "response": response_text,
+            "agent": "narrative",
+            "metadata": {
+                "active_tab": request.active_tab,
+                "current_view": request.current_view,
+            },
+        }),
+    }

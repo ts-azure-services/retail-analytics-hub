@@ -11,13 +11,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
 
 from agents.shared.models import (
     ChatRequest, ChatResponse,
     NarrativeRequest, NarrativeResponse,
     HealthResponse,
 )
-from .workflow_manager import run_narrative_pipeline, run_chat_pipeline
+from .workflow_manager import run_narrative_pipeline, run_chat_pipeline, stream_chat_pipeline
 
 app = FastAPI(
     title="Agent 2 — Business Narrative",
@@ -103,6 +104,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
             "current_view": request.current_view,
         },
     )
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Stream a chat response via Server-Sent Events."""
+    return EventSourceResponse(stream_chat_pipeline(request))
 
 
 @app.get("/health", response_model=HealthResponse)

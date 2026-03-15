@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
+import { Readable } from 'node:stream'
 import { initDb, initReviewsDb, executeTabMetrics, executeReviewsQuery, closeDb, closeReviewsDb } from './query-executor.js'
 import { validTabIds } from '../shared/metric-queries.js'
 
@@ -78,6 +79,44 @@ app.post('/api/chat', async (req, res) => {
   } catch (err: unknown) {
     console.error('[server] Agent 1 proxy error:', err)
     res.status(502).json({ error: 'Agent 1 unreachable' })
+  }
+})
+
+app.post('/api/chat/stream', async (req, res) => {
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 120_000)
+    const agentRes = await fetch(`${AGENT1_URL}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+
+    if (!agentRes.ok || !agentRes.body) {
+      const text = await agentRes.text().catch(() => '')
+      console.error(`[server] Agent 1 stream returned ${agentRes.status}: ${text}`)
+      res.status(agentRes.status).json({ error: `Agent 1 error: ${agentRes.status}` })
+      return
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+
+    // Pipe the SSE stream from Agent 1 directly to the client
+    const nodeStream = Readable.fromWeb(agentRes.body as any)
+    nodeStream.pipe(res)
+    nodeStream.on('error', () => res.end())
+  } catch (err: unknown) {
+    console.error('[server] Agent 1 stream proxy error:', err)
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Agent 1 unreachable' })
+    } else {
+      res.end()
+    }
   }
 })
 

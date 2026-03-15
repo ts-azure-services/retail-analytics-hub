@@ -8,7 +8,7 @@ import { ReviewTableView } from './components/ReviewTableView'
 import { generateMetricBreakdown } from './lib/mock-data'
 import { useTabMetrics } from './hooks/use-metrics'
 import { MetricData, ChatMessage, MetricBreakdown } from './lib/types'
-import { fetchDigest } from './lib/api-client'
+import { fetchDigest, streamChat } from './lib/api-client'
 import { Toaster, toast } from 'sonner'
 import { useIsMobile } from './hooks/use-mobile'
 import { Sheet, SheetContent, SheetTrigger } from './components/ui/sheet'
@@ -235,29 +235,101 @@ function App() {
     try {
       let response: string | null = null
 
-      // --- Try Agent 1 (Dashboard Explainer) via server proxy ---
+      // --- Try Agent 1 SSE streaming endpoint first ---
       try {
         const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 30000)
-        const res = await fetch(AGENT1_API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: content,
-            active_tab: activeTab,
-            current_view: currentView,
-            selected_metric_id: selectedMetric?.id || null,
-            session_id: `${activeTab}-${Date.now()}`,
-          }),
-          signal: controller.signal,
-        })
+        const timeout = setTimeout(() => controller.abort(), 120000)
+
+        const assistantId = `${Date.now()}-assistant`
+        let streamStarted = false
+
+        const body = {
+          message: content,
+          active_tab: activeTab,
+          current_view: currentView,
+          selected_metric_id: selectedMetric?.id || null,
+          session_id: `${activeTab}-${Date.now()}`,
+        }
+
+        response = await streamChat(body, {
+          onStatus: () => {
+            // Pipeline is processing — keep the loading skeleton visible
+          },
+          onChunk: (accumulated) => {
+            if (!streamStarted) {
+              // First chunk: create the assistant message and hide skeleton
+              streamStarted = true
+              setIsLoading(false)
+              setActiveMessages((current) => [
+                ...(current || []),
+                { id: assistantId, role: 'assistant', content: accumulated, timestamp: new Date() },
+              ])
+            } else {
+              // Update the assistant message with accumulated text
+              setActiveMessages((current) =>
+                (current || []).map((m) =>
+                  m.id === assistantId ? { ...m, content: accumulated } : m,
+                ),
+              )
+            }
+          },
+          onDone: (data) => {
+            // Replace with final canonical response text
+            if (streamStarted) {
+              setActiveMessages((current) =>
+                (current || []).map((m) =>
+                  m.id === assistantId ? { ...m, content: data.response } : m,
+                ),
+              )
+            }
+          },
+          onError: () => {
+            // Will fall through to non-streaming fallback
+          },
+        }, controller.signal)
+
         clearTimeout(timeout)
-        if (res.ok) {
-          const data = await res.json()
-          response = data.response || null
+
+        if (response) {
+          // Streaming created the assistant message — we're done
+          toast.success('Response received')
+          return
+        }
+
+        // If streaming started but ultimately failed, clean up partial message
+        if (streamStarted) {
+          setActiveMessages((current) => (current || []).filter((m) => m.id !== assistantId))
+          setIsLoading(true)
         }
       } catch {
-        // Agent unavailable — fall through to Spark LLM
+        // SSE stream unavailable — fall through to non-streaming
+      }
+
+      // --- Try non-streaming Agent 1 if streaming failed ---
+      if (!response) {
+        try {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 30000)
+          const res = await fetch(AGENT1_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: content,
+              active_tab: activeTab,
+              current_view: currentView,
+              selected_metric_id: selectedMetric?.id || null,
+              session_id: `${activeTab}-${Date.now()}`,
+            }),
+            signal: controller.signal,
+          })
+          clearTimeout(timeout)
+          if (res.ok) {
+            const data = await res.json()
+            response = data.response || null
+          }
+        } catch {
+          // Agent unavailable — fall through to Spark LLM
+        }
       }
 
       // --- Fallback to Spark LLM if agent unavailable ---

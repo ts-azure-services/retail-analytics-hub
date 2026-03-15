@@ -1181,11 +1181,11 @@ sql-parity-test: ## [core] Run SQL parity test (Postgres/DuckDB vs MSSQL via azu
 # =============================================================================
 ##@ Fabric Administration
 # =============================================================================
-create-fabric-rti: ## [core] ④  Create Fabric Eventhouse, Eventstream & KQL Database for customer reviews
+create-fabric-rti: ## [core] Create Fabric Eventhouse, Eventstream & KQL Database for customer reviews
 	@echo "🚀 Creating Fabric Real-Time Intelligence components..."
 	./fabric-admin-scripts/create-fabric-realtime-intelligence.sh
 
-create-lakehouse: ## [core] ③  Create Fabric Lakehouse for analytics
+create-lakehouse: ## [core] Create Fabric Lakehouse for analytics
 	@echo "🏠 Creating Fabric Lakehouse..."
 	./fabric-admin-scripts/create-fabric-lakehouse.sh
 

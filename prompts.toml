@@ -452,3 +452,52 @@ Constraints:
 - Use markdown tables for structured items, organize by actionable categories
 - Compliance mappings must reference specific Azure services and Terraform resources deployed in this repo
 """
+
+[logging-docs]
+prompt = """
+Generate docs/logging.md documenting the observability stack (OpenTelemetry + Application Insights). Structure:
+
+1. **Architecture Overview** — An ASCII diagram showing the two deployment modes: Cloud (agents + dashboard → Azure Monitor Exporter → Application Insights backed by Log Analytics) and Local (agents → OTLP/gRPC → Aspire dashboard). Note that the dashboard (Node.js) follows the same exporter selection logic as the Python agents.
+
+2. **Exporter Selection Logic** — Table with columns: Priority, Condition, Exporter, Protocol, Target. Cover the three tiers: APPLICATIONINSIGHTS_CONNECTION_STRING → Azure Monitor Exporter, OTEL_EXPORTER_OTLP_ENDPOINT → OTLP/gRPC, neither → Console. Note that App Insights takes precedence if both are set.
+
+3. **Python Agents** — Three sub-sections:
+   - Bootstrap: all agents call configure_telemetry(app, service_name) in main.py. Show a brief usage snippet.
+   - What configure_telemetry does: numbered list covering Resource creation, exporter selection, TracerProvider with BatchSpanProcessor, MeterProvider with PeriodicExportingMetricReader (60s), and auto-instrumentation (FastAPI, HTTPX, Logging).
+   - Crash protection: explain the outer try/except that logs errors but never crashes the agent.
+
+4. **Node.js Dashboard** — Three sub-sections:
+   - Bootstrap: loaded via --import flag before the Express app starts.
+   - What tracing.ts does: reads env vars, selects exporter, starts NodeSDK with auto-instrumentations (fs disabled), registers SIGTERM handler.
+   - Dependencies: table of @opentelemetry and @azure/monitor-opentelemetry-exporter npm packages with versions.
+
+5. **Infrastructure — Cloud** — Two sub-sections:
+   - Terraform: show the azurerm_application_insights resource, explain it's backed by the existing Log Analytics workspace, show env vars injected into all four container apps. List Terraform outputs (appinsights_connection_string, appinsights_instrumentation_key, both sensitive).
+   - Verify reference to infra/cloud/main.tf resource names.
+
+6. **Infrastructure — Local (Aspire)** — Two sub-sections:
+   - Docker Compose: show the aspire-dashboard service definition (ports 18888 UI, 4317→18889 OTLP gRPC, anonymous access). Show the OTEL env vars added to each agent service.
+   - Makefile targets: table of aspire-up, aspire-down, aspire-logs with descriptions.
+
+7. **Manual Spans** — Three sub-sections:
+   - MCP tool calls (mcp_tools.py): mcp.tool.call span with attributes mcp.tool.name, mcp.tool.cached, mcp.tool.success.
+   - Database connections (db.py): db.connect span with db.system attribute on _connect() and _fabric_connection().
+   - Parallel tool gathering (agent1 executors.py): gather_data.parallel_tools span with tool.count attribute.
+
+8. **Thread Context Propagation** — Explain that Agent 1's gather_data executor runs MCP calls in parallel via ThreadPoolExecutor. OTEL context is thread-local, so the parent context must be captured (otel_context.get_current), attached in worker threads (otel_context.attach), and detached after the call. This ensures child spans nest correctly under the parent.
+
+9. **Dependencies & Version Pin** — Two sub-sections:
+   - Python: table of all OTEL packages with version constraints. Explain the <1.39.0 pin reason: azure-monitor-opentelemetry v1.8.2 (transitive dep of agent-framework-core) imports LogData from opentelemetry.sdk._logs which was removed in SDK 1.39.0. Note the distro's observability is opt-in (ENABLE_OTEL, default false) and not activated by our agents. The pin should be removed once the distro ships a compatible version.
+   - Node.js: reference the dashboard dependencies table from section 4.
+
+10. **Environment Variables** — Table with columns: Variable, Set By, Purpose. Cover APPLICATIONINSIGHTS_CONNECTION_STRING, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_SERVICE_NAME, ENABLE_OTEL (not set, leave disabled).
+
+11. **File Inventory** — Table with columns: File, Language, Role. Cover: agents/shared/telemetry.py, agents/shared/config.py, agents/shared/mcp_tools.py, agents/shared/db.py, agents/agent1_explainer/executors.py, all three agent main.py files, dashboard/server/tracing.ts, dashboard/package.json, agents/docker-compose.yml, infra/cloud/main.tf, Makefile, pyproject.toml (root + agents).
+
+Constraints:
+- Verify all file paths, env var names, port numbers, and package versions against the actual codebase
+- No Makefile commands beyond listing the three aspire-* targets
+- Code snippets limited to the configure_telemetry call, the --import flag, the Terraform resource block, and the docker-compose service definition
+- Use markdown tables for structured listings and ASCII art for the architecture diagram
+- Cross-reference infra/cloud/main.tf for Terraform resources and agents/docker-compose.yml for local setup
+"""

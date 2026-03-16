@@ -125,6 +125,27 @@ create-agent-sp: ## [util] Create service principal for Docker agent containers
 				--role "DocumentDB Account Contributor" \
 				--scope "$$COSMOSDB_ID" \
 				-o none; \
+			COSMOS_ACCT=$$(echo "$$COSMOSDB_ID" | rev | cut -d/ -f1 | rev); \
+			SP_OID=$$(az ad sp show --id "$$CLIENT_ID" --query id -o tsv); \
+			echo "Assigning Cosmos DB data-plane role: Built-in Data Contributor → SP"; \
+			az cosmosdb sql role assignment create \
+				--account-name "$$COSMOS_ACCT" \
+				--resource-group "$$RG_NAME" \
+				--role-definition-id 00000000-0000-0000-0000-000000000002 \
+				--principal-id "$$SP_OID" \
+				--scope "/" \
+				-o none 2>/dev/null || echo "  (role may already exist)"; \
+			USER_OID=$$(az ad signed-in-user show --query id -o tsv 2>/dev/null); \
+			if [ -n "$$USER_OID" ]; then \
+				echo "Assigning Cosmos DB data-plane role: Built-in Data Contributor → current user"; \
+				az cosmosdb sql role assignment create \
+					--account-name "$$COSMOS_ACCT" \
+					--resource-group "$$RG_NAME" \
+					--role-definition-id 00000000-0000-0000-0000-000000000002 \
+					--principal-id "$$USER_OID" \
+					--scope "/" \
+					-o none 2>/dev/null || echo "  (role may already exist)"; \
+			fi; \
 		fi; \
 		sed -i '' '/^# Service principal credentials/d;/^AZURE_TENANT_ID=/d;/^AZURE_CLIENT_ID=/d;/^AZURE_CLIENT_SECRET=/d' local.env 2>/dev/null || true; \
 		sed -i '' -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' local.env 2>/dev/null || true; \
@@ -459,6 +480,88 @@ seed-reviews: ## [core] Seed customer reviews into event_hubs.duckdb
 	uv run python -m simulation.customer_review_simulator
 
 
+##@ Cloud-Direct Simulation
+check-cloud: ## [core] Verify connectivity to PostgreSQL, CosmosDB & Event Hub
+	@echo "🔍 Checking cloud connectivity..."
+	@uv run python -m simulation.check_cloud
+
+run-simulation-cloud: check-cloud ## [core] Run simulation writing directly to cloud services
+	@HOURS=$${HOURS:-1}; WORKFLOW=$${WORKFLOW:-omnichannel}; \
+	echo "☁️  Running $$WORKFLOW workflow ($$HOURS hr) → Azure cloud..."; \
+	SIMULATION_TARGET=cloud uv run python -m simulation.run_simulation \
+		--workflow $$WORKFLOW --duration $$HOURS
+
+run-all-workflows-cloud: check-cloud ## [core] Run all workflows writing directly to cloud
+	@HOURS=$${HOURS:-1}; \
+	echo "☁️  Running all workflows ($$HOURS hr) → Azure cloud..."; \
+	SIMULATION_TARGET=cloud uv run python -m simulation.run_simulation \
+		--workflow all --duration $$HOURS
+
+seed-reviews-cloud: check-cloud ## [core] Send customer reviews directly to Event Hub
+	@echo "📝 Sending customer reviews to Event Hub..."
+	@SIMULATION_TARGET=cloud uv run python -m simulation.customer_review_simulator
+
+check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
+	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
+	RG=$$(az group list --query "[?tags.tf=='local'].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	echo "🔍 Current IP: $$CURRENT_IP"; \
+	echo "📡 Server: $$SERVER"; \
+	echo ""; \
+	FOUND=$$(az postgres flexible-server firewall-rule list --resource-group $$RG --name $$SERVER --query "[?startIpAddress=='$$CURRENT_IP'].name" -o tsv); \
+	if [ -n "$$FOUND" ]; then \
+		echo "\033[0;32m✓ Your IP $$CURRENT_IP is in the firewall allow list (Rule: $$FOUND)\033[0m"; \
+	else \
+		echo "\033[0;31m✗ Your IP $$CURRENT_IP is NOT in the firewall allow list\033[0m"; \
+		echo "\033[0;33m💡 Run 'make add-pg-firewall' to add it\033[0m"; \
+	fi
+
+add-pg-firewall: ## [util] Add your current IP to PostgreSQL firewall
+	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
+	RG=$$(az group list --query "[?tags.tf=='local'].name" -o tsv | head -1); \
+	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
+	echo "Adding firewall rule for $$CURRENT_IP on $$SERVER..."; \
+	az postgres flexible-server firewall-rule create \
+		--resource-group $$RG --name $$SERVER \
+		--rule-name "AllowMyIP" --start-ip-address $$CURRENT_IP --end-ip-address $$CURRENT_IP; \
+	echo "\033[0;32m✓ Firewall rule added\033[0m"
+
+cleanse-cloud-data: ## [util] Clean cloud PostgreSQL and CosmosDB data
+	@echo ""
+	@echo "============================================================"
+	@echo "🧹 Data Cleansing - Cloud Resources"
+	@echo "============================================================"
+	@echo ""
+	@echo "Phase 1: Cleaning PostgreSQL..."
+	@cd seed-data && uv run cleanup_postgres.py || echo "⚠ PostgreSQL cleanup failed"
+	@echo ""
+	@echo "Phase 2: Cleaning CosmosDB..."
+	@cd seed-data && uv run cleanup_cosmos.py || echo "⚠ CosmosDB cleanup failed"
+	@echo ""
+	@echo "============================================================"
+	@echo "✓ Cloud data cleansing completed!"
+	@echo "============================================================"
+	@echo ""
+
+seed-cloud: check-cloud ## [core] Seed Azure PostgreSQL + CosmosDB (same data as seed-local)
+	@echo ""
+	@echo "============================================================"
+	@echo "🌱 Seeding Cloud Databases"
+	@echo "============================================================"
+	@echo ""
+	@cd seed-data && uv run seed_cloud.py
+	@echo ""
+
+seed-cloud-clean: check-cloud ## [core] Clean + seed cloud databases from scratch
+	@echo ""
+	@echo "============================================================"
+	@echo "🌱 Seeding Cloud Databases (clean)"
+	@echo "============================================================"
+	@echo ""
+	@cd seed-data && uv run seed_cloud.py --clean
+	@echo ""
+
+
 ##@ Dashboard
 dashboard-install: ## [util] Install dashboard npm dependencies
 	@echo "📦 Installing dashboard dependencies..."
@@ -779,29 +882,6 @@ setup-cosmos-mirror: ## [core] Setup Cosmos DB mirroring to Fabric (manual opera
 	echo "Or add specific Fabric service IPs to firewall rules"
 	@echo ""
 	@echo "Then, create a shortcut to this data in the Lakehouse. Source: OneLake. Select individual containers (so it comes in as tables)."
-
-check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
-	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
-	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
-	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
-	echo "🔍 Current IP: $$CURRENT_IP"; \
-	echo "📡 Server: $$SERVER"; \
-	echo ""; \
-	FOUND=$$(az postgres flexible-server firewall-rule list --resource-group $$RG --name $$SERVER --query "[?startIpAddress=='$$CURRENT_IP'].name" -o tsv); \
-	if [ -n "$$FOUND" ]; then \
-		echo "\033[0;32m✓ Your IP $$CURRENT_IP is in the firewall allow list (Rule: $$FOUND)\033[0m"; \
-	else \
-		echo "\033[0;31m✗ Your IP $$CURRENT_IP is NOT in the firewall allow list\033[0m"; \
-		echo "\033[0;33m💡 Run 'make add-pg-firewall' to add it\033[0m"; \
-	fi
-
-add-pg-firewall: ## [util] Add your current IP to PostgreSQL firewall
-	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
-	RG=$$(az group list --query "[?contains(name, 'fabric')].name" -o tsv | head -1); \
-	SERVER=$$(az postgres flexible-server list --resource-group $$RG --query "[0].name" -o tsv); \
-	az postgres flexible-server firewall-rule create \
-		--resource-group $$RG --name $$SERVER \
-		--rule-name "AllowMyIP" --start-ip-address $$CURRENT_IP --end-ip-address $$CURRENT_IP
 
 
 validate-postgres-admin: ## [util] Validate PostgreSQL admin user has required permissions

@@ -150,6 +150,7 @@ class DatabaseConfig:
     # CosmosDB
     cosmos_endpoint: str = field(default_factory=lambda: os.getenv("COSMOSDB_ENDPOINT", ""))
     cosmos_database: str = field(default_factory=lambda: os.getenv("COSMOSDB_DATABASE_NAME", ""))
+    cosmos_key: str = field(default_factory=lambda: os.getenv("COSMOSDB_PRIMARY_KEY", ""))
     
     # Event Hub
     eventhub_connection_string: str = field(default_factory=lambda: os.getenv("EVENTHUB_CONNECTION_STRING", ""))

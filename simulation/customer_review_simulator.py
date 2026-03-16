@@ -3,6 +3,9 @@
 Populates the customer_reviews table in the event_hubs DuckDB database
 with all canned reviews in a single batch.
 
+When SIMULATION_TARGET=cloud, reviews are sent directly to Azure Event Hub
+instead of DuckDB.
+
 Usage:
     uv run python -m simulation.customer_review_simulator
     uv run python -m simulation.customer_review_simulator --db /path/to/event_hubs.duckdb
@@ -11,11 +14,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
+from dotenv import load_dotenv
+
+load_dotenv("local.env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -157,7 +166,7 @@ CREATE TABLE IF NOT EXISTS customer_reviews (
 
 
 def seed_reviews(db_path: str) -> None:
-    """Insert all canned reviews into the customer_reviews table."""
+    """Insert all canned reviews into the customer_reviews table (DuckDB)."""
     con = duckdb.connect(db_path)
     try:
         con.execute(_DDL)
@@ -178,6 +187,50 @@ def seed_reviews(db_path: str) -> None:
         con.close()
 
 
+def seed_reviews_cloud() -> None:
+    """Send all canned reviews to Azure Event Hub as events."""
+    from simulation.shared.config import DatabaseConfig
+    from azure.eventhub import EventHubProducerClient, EventData
+    from azure.identity import DefaultAzureCredential
+
+    cfg = DatabaseConfig()
+    if not cfg.eventhub_connection_string or not cfg.eventhub_name:
+        logger.error("Event Hub config incomplete — cannot seed reviews to cloud")
+        sys.exit(1)
+
+    namespace = cfg.eventhub_connection_string.split("//")[1].split("/")[0]
+    credential = DefaultAzureCredential()
+    producer = EventHubProducerClient(
+        fully_qualified_namespace=namespace,
+        eventhub_name=cfg.eventhub_name,
+        credential=credential,
+    )
+
+    try:
+        batch = producer.create_batch()
+        for i, review_text in enumerate(CANNED_REVIEWS, start=1):
+            event_body = json.dumps({
+                "eventType": "customer_review",
+                "id": i,
+                "review_text": review_text,
+                "status": "To be processed",
+                "created_at": datetime.now().isoformat(),
+            })
+            try:
+                batch.add(EventData(event_body))
+            except ValueError:
+                # Batch full — send it and start a new one
+                producer.send_batch(batch)
+                batch = producer.create_batch()
+                batch.add(EventData(event_body))
+            logger.info("Queued review %d: %.60s...", i, review_text)
+
+        producer.send_batch(batch)
+        logger.info("Sent %d reviews to Event Hub", len(CANNED_REVIEWS))
+    finally:
+        producer.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Customer review simulator")
     parser.add_argument(
@@ -188,8 +241,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logger.info("Seeding reviews into %s", args.db)
-    seed_reviews(args.db)
+    use_cloud = os.getenv("SIMULATION_TARGET", "local").lower() == "cloud"
+
+    if use_cloud:
+        logger.info("SIMULATION_TARGET=cloud — sending reviews to Event Hub")
+        seed_reviews_cloud()
+    else:
+        logger.info("Seeding reviews into %s", args.db)
+        seed_reviews(args.db)
+
     logger.info("Done")
 
 

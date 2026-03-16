@@ -342,14 +342,17 @@ resource "local_file" "env_file" {
     COSMOSDB_CONNECTION_STRING='${azurerm_cosmosdb_account.example.primary_sql_connection_string}'
 
     POSTGRES_SERVER_NAME=${azurerm_postgresql_flexible_server.example.name}
-    POSTGRES_FQDN=${azurerm_postgresql_flexible_server.example.fqdn}
-    POSTGRES_DB_NAME=${azurerm_postgresql_flexible_server_database.example.name}
-    POSTGRES_ADMIN_LOGIN=${azurerm_postgresql_flexible_server.example.administrator_login}
-    POSTGRES_ADMIN_PASSWORD='${azurerm_postgresql_flexible_server.example.administrator_password}'
+    POSTGRESQL_SERVER_FQDN=${azurerm_postgresql_flexible_server.example.fqdn}
+    POSTGRESQL_DATABASE_NAME=${azurerm_postgresql_flexible_server_database.example.name}
+    POSTGRESQL_ADMIN_LOGIN=${azurerm_postgresql_flexible_server.example.administrator_login}
+    POSTGRESQL_ADMIN_PASSWORD='${azurerm_postgresql_flexible_server.example.administrator_password}'
 
     EVENTHUB_NAMESPACE=${azurerm_eventhub_namespace.example.name}
     EVENTHUB_NAME=${azurerm_eventhub.example.name}
     EVENTHUB_POLICY_NAME=${azurerm_eventhub_authorization_rule.example.name}
     EVENTHUB_CONNECTION_STRING='${azurerm_eventhub_authorization_rule.example.primary_connection_string}'
+
+    # Simulation target: "local" = DuckDB (default), "cloud" = write directly to Azure
+    SIMULATION_TARGET=local
   EOT
 }

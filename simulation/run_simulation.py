@@ -169,22 +169,20 @@ class SimulationOrchestrator:
         logger.info("Simulation environment ready")
     
     def _get_db_connection(self):
-        """Return a database connection – DuckDB when local, psycopg otherwise."""
+        """Return a database connection – DuckDB when local, pool connection otherwise."""
         if USE_LOCAL_DB:
             import duckdb
             from simulation.shared.local_backend import POSTGRES_DB_PATH
             return duckdb.connect(POSTGRES_DB_PATH)
         else:
-            import psycopg
-            return psycopg.connect(
-                host=self.config.database.postgres_host,
-                dbname=self.config.database.postgres_database,
-                user=self.config.database.postgres_user,
-                password=self.config.database.postgres_password,
-                port=5432,
-                sslmode='require',
-                connect_timeout=10,
-            )
+            return self.persistence.postgres.get_connection()
+
+    def _return_db_connection(self, conn):
+        """Return connection to pool (cloud) or close it (local)."""
+        if USE_LOCAL_DB:
+            conn.close()
+        else:
+            self.persistence.postgres.return_connection(conn)
 
     def load_inventory_from_db(self):
         """Load initial inventory from database"""
@@ -204,7 +202,7 @@ class SimulationOrchestrator:
             logger.info(f"Loaded {len(inventory_rows)} inventory records")
             
             cursor.close()
-            conn.close()
+            self._return_db_connection(conn)
             
         except Exception as e:
             logger.warning(f"Could not load inventory from database: {e}")
@@ -225,7 +223,7 @@ class SimulationOrchestrator:
             logger.info(f"Loaded {len(products)} products")
             
             cursor.close()
-            conn.close()
+            self._return_db_connection(conn)
             
             return products
             
@@ -257,7 +255,7 @@ class SimulationOrchestrator:
             logger.info(f"Loaded {len(suppliers)} suppliers and {len(policies)} replenishment policies")
             
             cursor.close()
-            conn.close()
+            self._return_db_connection(conn)
             
             return suppliers, policies
             
@@ -290,7 +288,7 @@ class SimulationOrchestrator:
             logger.info(f"Loaded {len(customers)} customers (limit: {self.config.customer_limit})")
             
             cursor.close()
-            conn.close()
+            self._return_db_connection(conn)
             
             return customers
             
@@ -674,9 +672,18 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # Handle sweep mode
+    # Handle sweep mode — always use local DuckDB regardless of SIMULATION_TARGET
     if args.sweep:
+        import simulation.shared.persistence as _persist
+        _persist.USE_LOCAL_DB = True
         return run_sweep_mode(args)
+
+    # Cloud-direct mode: validate connectivity before starting
+    if not USE_LOCAL_DB:
+        from simulation.check_cloud import check_cloud_connectivity
+        if not check_cloud_connectivity():
+            logger.error("Cloud connectivity check failed — aborting simulation")
+            return 1
 
     # Load configuration
     config = SimulationConfig()
@@ -689,9 +696,11 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
+    mode_label = "CLOUD (Azure)" if not USE_LOCAL_DB else "LOCAL (DuckDB)"
     print("=" * 80)
     print("RETAIL SIMULATION - OMNICHANNEL PURCHASE & FULFILLMENT")
     print("=" * 80)
+    print(f"Target:   {mode_label}")
     print(f"Workflow: {args.workflow}")
     print(f"Duration: {args.duration} hours")
     print(f"Random Seed: {args.seed}")

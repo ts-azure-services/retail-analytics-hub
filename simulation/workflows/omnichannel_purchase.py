@@ -26,10 +26,10 @@ from uuid import uuid4
 import numpy as np
 
 from ..shared.persistence import USE_LOCAL_DB
-if not USE_LOCAL_DB:
+try:
     from azure.cosmos.exceptions import CosmosHttpResponseError
-else:
-    # Stub so except clauses still parse when running locally
+except ImportError:
+    # Stub so except clauses still parse when azure-cosmos is not installed
     CosmosHttpResponseError = Exception
 
 from ..shared.config import SimulationConfig

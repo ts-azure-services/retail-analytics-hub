@@ -31,6 +31,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cloud = [
+    "azure-cosmos",
+    "azure-eventhub",
+    "azure-identity",
+    "psycopg[binary]",
+    "psycopg_pool",
+]
 sync = [
     "azure-storage-blob",
     "azure-identity",
@@ -38,3 +45,6 @@ sync = [
     "azure-cosmos",
     "psycopg",
 ]
+
+[tool.setuptools.packages.find]
+include = ["simulation*", "agents*", "sync*", "analysis*", "seed-data*"]

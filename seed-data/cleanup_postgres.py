@@ -3,12 +3,17 @@
 
 import os
 import sys
+from pathlib import Path
+
 import psycopg
 from dotenv import load_dotenv
 
+# Load env vars from local.env at repo root
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / "local.env")
+
 def cleanup_postgres():
     """Drop all tables from PostgreSQL database"""
-    load_dotenv()
     
     pg_host = os.getenv("POSTGRESQL_SERVER_FQDN")
     pg_database = os.getenv("POSTGRESQL_DATABASE_NAME")
@@ -38,12 +43,11 @@ def cleanup_postgres():
         cursor = conn.cursor()
         
         # Get all tables in public schema
-        cursor.execute("""
-            SELECT tablename 
-            FROM pg_tables 
-            WHERE schemaname = 'public'
-            ORDER BY tablename
-        """)
+        cursor.execute(
+            "SELECT tablename FROM pg_tables"
+            " WHERE schemaname = 'public'"
+            " ORDER BY tablename"
+        )
         
         tables = cursor.fetchall()
         

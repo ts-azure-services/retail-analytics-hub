@@ -3,16 +3,21 @@
 
 import os
 import sys
+from pathlib import Path
+
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
+
+# Load env vars from local.env at repo root
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / "local.env")
 
 def cleanup_cosmos():
     """
     Delete all application containers from CosmosDB.
     Application containers will be recreated by seed scripts as needed.
     """
-    load_dotenv()
     
     endpoint = os.getenv("COSMOSDB_ENDPOINT")
     database_name = os.getenv("COSMOSDB_DATABASE_NAME")

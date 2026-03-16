@@ -6,14 +6,20 @@ Handles writing simulation state to:
 - CosmosDB (carts, workflow events)
 - Event Hub (event streaming)
 
-Toggle USE_LOCAL_DB below to route all I/O to local DuckDB files instead
-of Azure services.  Comment out / set False to revert to Azure backends.
+Set SIMULATION_TARGET=cloud in local.env (or environment) to route writes
+to Azure services.  The default ("local") uses DuckDB files.
 """
 
 # ──────────────────────────────────────────────────────────────────────
-# LOCAL-DB TOGGLE  –  set True to use DuckDB, False for Azure backends
+# LOCAL-DB TOGGLE  –  driven by SIMULATION_TARGET env var
+#   "local" (default) → DuckDB files
+#   "cloud"           → Azure PostgreSQL / CosmosDB / Event Hub
 # ──────────────────────────────────────────────────────────────────────
-USE_LOCAL_DB = True
+import os
+from dotenv import load_dotenv
+load_dotenv("local.env")
+
+USE_LOCAL_DB = os.getenv("SIMULATION_TARGET", "local").lower() != "cloud"
 # ──────────────────────────────────────────────────────────────────────
 
 import asyncio
@@ -24,14 +30,8 @@ from datetime import datetime
 from uuid import uuid4
 from decimal import Decimal
 
-if not USE_LOCAL_DB:
-    import psycopg
-    from psycopg_pool import ConnectionPool
-    from azure.cosmos import CosmosClient, PartitionKey
-    from azure.cosmos.exceptions import CosmosHttpResponseError
-    from azure.identity import DefaultAzureCredential
-    from azure.eventhub import EventHubProducerClient, EventData
-    from azure.eventhub.exceptions import EventHubError
+# Cloud SDK imports are deferred to class __init__ methods so that
+# sweep mode can override USE_LOCAL_DB before they are triggered.
 
 from .config import DatabaseConfig
 
@@ -58,6 +58,10 @@ class PostgresWriter:
     """Handles writes to PostgreSQL database"""
     
     def __init__(self, config: DatabaseConfig):
+        global psycopg, ConnectionPool
+        import psycopg
+        from psycopg_pool import ConnectionPool
+
         self.config = config
         self.connection_pool = None
         self._initialize_pool()
@@ -78,7 +82,8 @@ class PostgresWriter:
             self.connection_pool = ConnectionPool(
                 conninfo=conninfo,
                 min_size=1,
-                max_size=10
+                max_size=5,
+                timeout=30,
             )
             logger.info("PostgreSQL connection pool initialized")
         except psycopg.Error as e:
@@ -404,9 +409,13 @@ class CosmosWriter:
     """Handles writes to CosmosDB"""
     
     def __init__(self, config: DatabaseConfig):
+        global CosmosClient, PartitionKey, CosmosHttpResponseError
+        from azure.cosmos import CosmosClient, PartitionKey
+        from azure.cosmos.exceptions import CosmosHttpResponseError
+        from azure.identity import DefaultAzureCredential
+
         self.config = config
-        credential = DefaultAzureCredential()
-        self.client = CosmosClient(config.cosmos_endpoint, credential=credential)
+        self.client = CosmosClient(config.cosmos_endpoint, credential=DefaultAzureCredential())
         self.database = self.client.get_database_client(config.cosmos_database)
         
         # Container references
@@ -536,6 +545,11 @@ class EventHubWriter:
     """Handles event streaming to Azure Event Hub"""
     
     def __init__(self, config: DatabaseConfig):
+        global EventHubProducerClient, EventData, EventHubError
+        from azure.eventhub import EventHubProducerClient, EventData
+        from azure.eventhub.exceptions import EventHubError
+        from azure.identity import DefaultAzureCredential
+
         self.config = config
         self.producer = None
         

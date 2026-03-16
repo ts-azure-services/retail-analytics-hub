@@ -60,6 +60,8 @@ create-agent-sp: ## [util] Create service principal for Docker agent containers
 		echo "✗ Could not read openai_id from Terraform state. Run tf-local first."; \
 		exit 1; \
 	fi; \
+	EVENTHUB_ID=$$(terraform -chdir=infra/local output -raw eventhub_id 2>/dev/null); \
+	COSMOSDB_ID=$$(terraform -chdir=infra/local output -raw cosmosdb_account_id 2>/dev/null); \
 	RG_NAME=$$(terraform -chdir=infra/local output -raw resource_group_name 2>/dev/null); \
 	SP_DISPLAY_NAME="$(SP_NAME_PREFIX)-$${RG_NAME#rg-openai-}"; \
 	EXISTING=$$(az ad app list --filter "displayName eq '$$SP_DISPLAY_NAME'" --query "[0].appId" -o tsv 2>/dev/null); \
@@ -108,6 +110,22 @@ create-agent-sp: ## [util] Create service principal for Docker agent containers
 			--role "Cognitive Services User" \
 			--scope "$$OPENAI_ID" \
 			-o none; \
+		if [ -n "$$EVENTHUB_ID" ]; then \
+			echo "Assigning additional role: Azure Event Hubs Data Sender"; \
+			az role assignment create \
+				--assignee "$$CLIENT_ID" \
+				--role "Azure Event Hubs Data Sender" \
+				--scope "$$EVENTHUB_ID" \
+				-o none; \
+		fi; \
+		if [ -n "$$COSMOSDB_ID" ]; then \
+			echo "Assigning additional role: DocumentDB Account Contributor"; \
+			az role assignment create \
+				--assignee "$$CLIENT_ID" \
+				--role "DocumentDB Account Contributor" \
+				--scope "$$COSMOSDB_ID" \
+				-o none; \
+		fi; \
 		sed -i '' '/^# Service principal credentials/d;/^AZURE_TENANT_ID=/d;/^AZURE_CLIENT_ID=/d;/^AZURE_CLIENT_SECRET=/d' local.env 2>/dev/null || true; \
 		sed -i '' -e :a -e '/^\n*$$/{$$d;N;ba' -e '}' local.env 2>/dev/null || true; \
 		echo "" >> local.env; \

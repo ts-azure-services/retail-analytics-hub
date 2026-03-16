@@ -479,6 +479,37 @@ seed-reviews: ## [core] Seed raw reviews into event_hubs.duckdb (Agent 3 process
 	@echo "📝 Seeding raw reviews..."
 	uv run python -m simulation.review_generator --mode canned
 
+seed-reviews-llm: ## [util] Generate LLM reviews into raw_reviews (local DuckDB)
+	@COUNT=$${COUNT:-5}; \
+	echo "🤖 Generating $$COUNT LLM reviews into raw_reviews..."; \
+	uv run python -m simulation.review_generator --mode llm --count $$COUNT
+
+check-raw-reviews: ## [util] Show pending raw reviews in event_hubs.duckdb
+	@echo "📋 Pending raw reviews (consumed=false):"
+	@uv run python -c "import duckdb; \
+	con = duckdb.connect('event_hubs.duckdb', read_only=True); \
+	total = con.execute('SELECT count(*) FROM raw_reviews').fetchone()[0]; \
+	pending = con.execute('SELECT count(*) FROM raw_reviews WHERE consumed = false').fetchone()[0]; \
+	print(f'  Total: {total}  |  Pending: {pending}  |  Consumed: {total - pending}')"
+
+check-reviews: ## [util] Show processed customer reviews in event_hubs.duckdb
+	@echo "📋 Customer reviews:"
+	@uv run python -c "import duckdb; \
+	con = duckdb.connect('event_hubs.duckdb', read_only=True); \
+	total = con.execute('SELECT count(*) FROM customer_reviews').fetchone()[0]; \
+	print(f'  Total processed: {total}'); \
+	rows = con.execute('SELECT product_id, sentiment, response_text FROM customer_reviews ORDER BY id DESC LIMIT 5').fetchall(); \
+	print('  Last 5:'); \
+	[print(f'    {r[0]} | {r[1]} | {r[2][:60]}...') for r in rows]"
+
+clean-reviews: ## [util] Truncate raw_reviews and customer_reviews tables
+	@echo "🗑  Clearing review tables..."
+	@uv run python -c "import duckdb; \
+	con = duckdb.connect('event_hubs.duckdb'); \
+	con.execute('DELETE FROM customer_reviews'); \
+	con.execute('DELETE FROM raw_reviews'); \
+	print('✓ raw_reviews + customer_reviews cleared')"
+
 
 ##@ Cloud-Direct Simulation
 check-cloud: ## [core] Verify connectivity to PostgreSQL, CosmosDB & Event Hub
@@ -500,6 +531,16 @@ run-all-workflows-cloud: check-cloud ## [core] Run all workflows writing directl
 seed-reviews-cloud: check-cloud ## [core] Send raw reviews to EventHub (Agent 3 consumes & processes)
 	@echo "📝 Sending raw reviews to EventHub..."
 	uv run python -m simulation.review_generator --mode canned
+
+seed-reviews-cloud-drip: check-cloud ## [util] Drip-feed reviews to EventHub (DRIP=seconds between events)
+	@DRIP=$${DRIP:-3}; \
+	echo "📝 Drip-feeding reviews to EventHub (every $$DRIP s)..."; \
+	uv run python -m simulation.review_generator --mode canned --drip $$DRIP
+
+seed-reviews-cloud-llm: check-cloud ## [util] Generate LLM reviews to EventHub
+	@COUNT=$${COUNT:-5}; \
+	echo "🤖 Generating $$COUNT LLM reviews → EventHub..."; \
+	uv run python -m simulation.review_generator --mode llm --count $$COUNT
 
 check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
 	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
@@ -626,11 +667,16 @@ aspire-down: ## [util] Stop Aspire dashboard
 aspire-logs: ## [util] Tail Aspire dashboard logs
 	docker compose -f agents/docker-compose.yml logs -f aspire-dashboard
 
-# agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
-# 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
-#
-# agent3-dev: ## [util] Start Agent 3 with auto-reload
-# 	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
+agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
+	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
+
+agent3-dev: ## [util] Start Agent 3 with auto-reload (local DuckDB poller)
+	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
+
+agent3-cloud: ## [util] Start Agent 3 in cloud mode (EventHub consumer)
+	@echo "☁️  Starting Agent 3 with EventHub consumer..."
+	set -a && source local.env && set +a && \
+	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
 
 # =============================================================================
 ##@ Infrastructure (Cloud)

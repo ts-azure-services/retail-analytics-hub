@@ -8,10 +8,17 @@ from typing_extensions import Never
 from agent_framework import executor, AgentExecutorResponse, WorkflowContext
 
 from agents.agent3_sentiment import db
+from agents.shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 _SOURCE = "agent3-sentiment"
+
+
+def _is_cloud_mode() -> bool:
+    """Return True when EventHub consumer/producer env vars are configured."""
+    settings = get_settings()
+    return bool(settings.eventhub_namespace and settings.eventhub_raw_name and settings.eventhub_processed_name)
 
 # Shared context between executors (AgentExecutorResponse doesn't carry custom metadata)
 _context: dict = {}
@@ -63,7 +70,7 @@ async def adapt_classification(response: AgentExecutorResponse, ctx: WorkflowCon
 
 @executor(id="persist_results")
 async def persist_results(response: AgentExecutorResponse, ctx: WorkflowContext[Never, str]) -> None:
-    """Parse responder JSON, update DuckDB, yield final output."""
+    """Parse responder JSON, persist result (DuckDB or EventHub), yield final output."""
     text = response.agent_run_response.text or ""
 
     try:
@@ -79,7 +86,9 @@ async def persist_results(response: AgentExecutorResponse, ctx: WorkflowContext[
     chatbot_statement = response.get("chatbot_statement")
     needs_human_review = response.get("needs_human_review", False)
 
-    if review_id is not None:
+    # In cloud mode the EventHub consumer loop handles publishing;
+    # in local mode we write directly to DuckDB.
+    if review_id is not None and not _is_cloud_mode():
         db.update_review_result(
             review_id,
             sentiment_category=sentiment_category,
@@ -87,7 +96,7 @@ async def persist_results(response: AgentExecutorResponse, ctx: WorkflowContext[
             status=status,
             chatbot_statement=chatbot_statement,
         )
-        logger.info("Review %s → %s (%s)", review_id, status, sentiment_category)
+    logger.info("Review %s → %s (%s)", review_id, status, sentiment_category)
 
     result = {
         "review_id": review_id,

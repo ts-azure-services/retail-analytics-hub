@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     fabric_kql_database: str = ""
     fabric_kql_table: str = ""
 
+    # ── EventHub (cloud mode — real-time event-driven processing) ──
+    eventhub_namespace: str = ""
+    eventhub_raw_name: str = ""       # inbound: raw review events
+    eventhub_processed_name: str = "" # outbound: sentiment-analysed events
+    eventhub_consumer_group: str = "$Default"
+
     # ── DuckDB paths ──────────────────────────────────────────────
     local_postgres_db: str = Field(
         default_factory=lambda: os.environ.get(

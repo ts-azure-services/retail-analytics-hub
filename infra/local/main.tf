@@ -198,6 +198,14 @@ resource "azurerm_eventhub" "example" {
   message_retention = 3
 }
 
+# Raw inbound reviews hub (generator publishes here, Agent 3 consumes)
+resource "azurerm_eventhub" "raw_reviews" {
+  name              = "fabric${random_string.suffix.result}rawreviews"
+  namespace_id      = azurerm_eventhub_namespace.example.id
+  partition_count   = 4
+  message_retention = 3
+}
+
 resource "azurerm_eventhub_authorization_rule" "example" {
   name                = "ehpolicy${random_string.suffix.result}"
   namespace_name      = azurerm_eventhub_namespace.example.name
@@ -206,6 +214,38 @@ resource "azurerm_eventhub_authorization_rule" "example" {
   listen              = true
   send                = true
   manage              = false
+}
+
+# SAS policy for raw-reviews hub
+resource "azurerm_eventhub_authorization_rule" "raw_reviews" {
+  name                = "ehpolicyraw${random_string.suffix.result}"
+  namespace_name      = azurerm_eventhub_namespace.example.name
+  eventhub_name       = azurerm_eventhub.raw_reviews.name
+  resource_group_name = azurerm_resource_group.openai.name
+  listen              = true
+  send                = true
+  manage              = false
+}
+
+# Grant current user Data Sender on processed-reviews hub
+resource "azurerm_role_assignment" "eventhub_sender" {
+  scope                = azurerm_eventhub.example.id
+  role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# Grant current user Data Sender on raw-reviews hub
+resource "azurerm_role_assignment" "eventhub_raw_sender" {
+  scope                = azurerm_eventhub.raw_reviews.id
+  role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+# Grant current user Data Receiver on raw-reviews hub
+resource "azurerm_role_assignment" "eventhub_raw_receiver" {
+  scope                = azurerm_eventhub.raw_reviews.id
+  role_definition_name = "Azure Event Hubs Data Receiver"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 # =============================================================================
@@ -299,7 +339,12 @@ output "event_hub_namespace" {
 
 output "event_hub" {
   value       = azurerm_eventhub.example.name
-  description = "The name of the Event Hub"
+  description = "The name of the Event Hub (processed reviews)"
+}
+
+output "event_hub_raw_reviews" {
+  value       = azurerm_eventhub.raw_reviews.name
+  description = "The name of the raw-reviews Event Hub (inbound)"
 }
 
 output "event_hub_policy" {
@@ -349,6 +394,8 @@ resource "local_file" "env_file" {
 
     EVENTHUB_NAMESPACE=${azurerm_eventhub_namespace.example.name}
     EVENTHUB_NAME=${azurerm_eventhub.example.name}
+    EVENTHUB_RAW_NAME=${azurerm_eventhub.raw_reviews.name}
+    EVENTHUB_PROCESSED_NAME=${azurerm_eventhub.example.name}
     EVENTHUB_POLICY_NAME=${azurerm_eventhub_authorization_rule.example.name}
     EVENTHUB_CONNECTION_STRING='${azurerm_eventhub_authorization_rule.example.primary_connection_string}'
 

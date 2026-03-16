@@ -475,9 +475,9 @@ clean-simulation: ## [util] Reset databases (cleanse + re-seed)
 	@make cleanse-data-force
 	@make seed-all-with-history
 
-seed-reviews: ## [core] Seed customer reviews into event_hubs.duckdb
-	@echo "📝 Seeding customer reviews..."
-	uv run python -m simulation.customer_review_simulator
+seed-reviews: ## [core] Seed raw reviews into event_hubs.duckdb (Agent 3 processes them)
+	@echo "📝 Seeding raw reviews..."
+	uv run python -m simulation.review_generator --mode canned
 
 
 ##@ Cloud-Direct Simulation
@@ -497,9 +497,9 @@ run-all-workflows-cloud: check-cloud ## [core] Run all workflows writing directl
 	SIMULATION_TARGET=cloud uv run python -m simulation.run_simulation \
 		--workflow all --duration $$HOURS
 
-seed-reviews-cloud: check-cloud ## [core] Send customer reviews directly to Event Hub
-	@echo "📝 Sending customer reviews to Event Hub..."
-	@SIMULATION_TARGET=cloud uv run python -m simulation.customer_review_simulator
+seed-reviews-cloud: check-cloud ## [core] Send raw reviews to EventHub (Agent 3 consumes & processes)
+	@echo "📝 Sending raw reviews to EventHub..."
+	uv run python -m simulation.review_generator --mode canned
 
 check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
 	@CURRENT_IP=$$(curl -s https://api.ipify.org); \

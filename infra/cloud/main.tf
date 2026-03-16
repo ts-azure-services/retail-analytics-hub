@@ -748,6 +748,15 @@ resource "azurerm_key_vault_secret" "eventhub_primary_key" {
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
+# Store raw-reviews Event Hub connection string in Key Vault
+resource "azurerm_key_vault_secret" "eventhub_raw_connection_string" {
+  name         = "eventhub-raw-connection-string"
+  value        = azurerm_eventhub_authorization_rule.raw_reviews.primary_connection_string
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_role_assignment.current_user_kv_admin]
+}
+
 # =============================================================================
 # EVENT HUB
 # =============================================================================
@@ -767,8 +776,17 @@ resource "azurerm_eventhub_namespace" "example" {
 }
 
 # Create Event Hub
+# Create Event Hub (processed reviews — consumed by Fabric Eventstream → KQL)
 resource "azurerm_eventhub" "example" {
   name              = "fabric${random_string.suffix.result}eventhub"
+  namespace_id      = azurerm_eventhub_namespace.example.id
+  partition_count   = 4
+  message_retention = 3
+}
+
+# Create Event Hub for raw inbound reviews (generator publishes here, Agent 3 consumes)
+resource "azurerm_eventhub" "raw_reviews" {
+  name              = "fabric${random_string.suffix.result}rawreviews"
   namespace_id      = azurerm_eventhub_namespace.example.id
   partition_count   = 4
   message_retention = 3
@@ -785,10 +803,33 @@ resource "azurerm_eventhub_authorization_rule" "example" {
   manage              = false
 }
 
+# SAS policy for raw-reviews hub
+resource "azurerm_eventhub_authorization_rule" "raw_reviews" {
+  name                = "ehpolicyraw${random_string.suffix.result}"
+  namespace_name      = azurerm_eventhub_namespace.example.name
+  eventhub_name       = azurerm_eventhub.raw_reviews.name
+  resource_group_name = azurerm_resource_group.example.name
+  listen              = true
+  send                = true
+  manage              = false
+}
+
 # Grant current user Azure Event Hubs Data Sender role for passwordless authentication
 resource "azurerm_role_assignment" "eventhub_sender" {
   scope                = azurerm_eventhub.example.id
   role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_role_assignment" "eventhub_raw_sender" {
+  scope                = azurerm_eventhub.raw_reviews.id
+  role_definition_name = "Azure Event Hubs Data Sender"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_role_assignment" "eventhub_raw_receiver" {
+  scope                = azurerm_eventhub.raw_reviews.id
+  role_definition_name = "Azure Event Hubs Data Receiver"
   principal_id         = data.azurerm_client_config.current.object_id
 }
 
@@ -1722,6 +1763,18 @@ resource "azurerm_container_app" "agent3" {
         name  = "OTEL_SERVICE_NAME"
         value = "agent3-sentiment"
       }
+      env {
+        name  = "EVENTHUB_NAMESPACE"
+        value = "${azurerm_eventhub_namespace.example.name}.servicebus.windows.net"
+      }
+      env {
+        name  = "EVENTHUB_RAW_NAME"
+        value = azurerm_eventhub.raw_reviews.name
+      }
+      env {
+        name  = "EVENTHUB_PROCESSED_NAME"
+        value = azurerm_eventhub.example.name
+      }
 
       liveness_probe {
         transport               = "HTTP"
@@ -1805,6 +1858,20 @@ resource "azurerm_role_assignment" "agent2_openai" {
 resource "azurerm_role_assignment" "agent3_openai" {
   scope                = azurerm_cognitive_account.openai.id
   role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_container_app.agent3.identity[0].principal_id
+}
+
+# Agent 3 — receive raw review events from the inbound hub
+resource "azurerm_role_assignment" "agent3_eventhub_receiver" {
+  scope                = azurerm_eventhub.raw_reviews.id
+  role_definition_name = "Azure Event Hubs Data Receiver"
+  principal_id         = azurerm_container_app.agent3.identity[0].principal_id
+}
+
+# Agent 3 — publish processed review events to the outbound hub
+resource "azurerm_role_assignment" "agent3_eventhub_sender" {
+  scope                = azurerm_eventhub.example.id
+  role_definition_name = "Azure Event Hubs Data Sender"
   principal_id         = azurerm_container_app.agent3.identity[0].principal_id
 }
 
@@ -1998,6 +2065,18 @@ output "event_hub_namespace_conn_string" {
   value       = azurerm_eventhub_namespace.example.default_primary_connection_string
   description = "The primary connection string for the Event Hub namespace"
   sensitive   = true
+}
+
+# Event Hub — raw reviews (inbound)
+output "event_hub_raw_reviews_name" {
+  value       = azurerm_eventhub.raw_reviews.name
+  description = "The name of the raw-reviews Event Hub (inbound)"
+}
+
+# Event Hub — processed reviews (outbound, existing)
+output "event_hub_processed_reviews_name" {
+  value       = azurerm_eventhub.example.name
+  description = "The name of the processed-reviews Event Hub (outbound)"
 }
 
 # Event Hub Name
@@ -2260,6 +2339,8 @@ resource "local_file" "env_file" {
 
     EVENTHUB_NAMESPACE=${azurerm_eventhub_namespace.example.name}
     EVENTHUB_NAME=${azurerm_eventhub.example.name}
+    EVENTHUB_RAW_NAME=${azurerm_eventhub.raw_reviews.name}
+    EVENTHUB_PROCESSED_NAME=${azurerm_eventhub.example.name}
     EVENTHUB_POLICY_NAME=${azurerm_eventhub_authorization_rule.example.name}
     EVENTHUB_CONNECTION_STRING='${azurerm_eventhub_authorization_rule.example.primary_connection_string}'
 

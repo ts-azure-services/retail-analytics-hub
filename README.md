@@ -54,9 +54,9 @@ Nine ML models train on simulation output — three per workflow:
 
 Training can run across all models or be scoped to a specific workflow group.
 
-### Customer Reviews (`simulation/customer_review_simulator.py`)
+### Customer Reviews (`simulation/review_generator.py`)
 
-Generates synthetic customer product reviews and persists them to `event_hubs.duckdb`. These reviews feed the sentiment analysis agent and the Reviews tab in the dashboard.
+Generates raw customer review events and seeds them into a staging layer — locally into the `raw_reviews` table in `event_hubs.duckdb`, or in cloud mode directly to the `raw-reviews` Azure EventHub. Agent 3 picks up raw reviews, runs sentiment analysis, and writes processed results to `customer_reviews` (local) or the `processed-reviews` EventHub (cloud). Supports `--mode canned` (built-in reviews) and `--mode llm` (GPT-generated reviews).
 
 ### Dashboard (`dashboard/`)
 
@@ -144,7 +144,7 @@ simulation/                            # Discrete-event simulation engine
 ├── workflows/                         #   Omnichannel, inventory, engagement workflows
 ├── sweep/                             #   Parameter sweep framework
 ├── ml/                                #   9 ML models (3 per workflow)
-├── customer_review_simulator.py       #   Synthetic review generator
+├── review_generator.py                  #   Raw review generator (local + cloud)
 └── run_simulation.py                  #   CLI entry point
 analysis/                              # Post-simulation analysis
 ├── sweep_report.py                    #   Sweep volume/variety reporting

@@ -1,4 +1,4 @@
-"""DuckDB helpers for the customer_reviews table."""
+"""DuckDB helpers for the customer_reviews and raw_reviews tables."""
 
 from __future__ import annotations
 
@@ -24,16 +24,26 @@ CREATE TABLE IF NOT EXISTS customer_reviews (
 );
 """
 
+_RAW_DDL = """\
+CREATE TABLE IF NOT EXISTS raw_reviews (
+    id          INTEGER PRIMARY KEY,
+    review_text VARCHAR NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    consumed    BOOLEAN DEFAULT FALSE
+);
+"""
+
 
 def _connect() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(get_settings().customer_reviews_db)
 
 
 def init_schema() -> None:
-    """Create the customer_reviews table if it doesn't exist."""
+    """Create the customer_reviews and raw_reviews tables if they don't exist."""
     con = _connect()
     try:
         con.execute(_DDL)
+        con.execute(_RAW_DDL)
     finally:
         con.close()
 
@@ -120,5 +130,41 @@ def get_retryable_reviews(max_retries: int = 3) -> list[dict]:
         return [
             {"id": r[0], "review_text": r[1], "retry_count": r[2]} for r in rows
         ]
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# raw_reviews helpers (local mode staging table)
+# ---------------------------------------------------------------------------
+
+
+def get_pending_raw_reviews(limit: int = 20) -> list[dict]:
+    """Return unconsumed raw reviews for processing."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            """
+            SELECT id, review_text
+            FROM raw_reviews
+            WHERE consumed = FALSE
+            ORDER BY id
+            LIMIT ?
+            """,
+            [limit],
+        ).fetchall()
+        return [{"id": r[0], "review_text": r[1]} for r in rows]
+    finally:
+        con.close()
+
+
+def mark_raw_review_consumed(review_id: int) -> None:
+    """Mark a raw review as consumed after successful processing."""
+    con = _connect()
+    try:
+        con.execute(
+            "UPDATE raw_reviews SET consumed = TRUE WHERE id = ?",
+            [review_id],
+        )
     finally:
         con.close()

@@ -1,256 +1,34 @@
-"""Customer review simulator.
+"""Customer review simulator — DEPRECATED.
 
-Populates the customer_reviews table in the event_hubs DuckDB database
-with all canned reviews in a single batch.
+This module is superseded by ``simulation.cloud_review_generator`` which
+seeds raw reviews into both local (raw_reviews DuckDB table) and cloud
+(EventHub) targets.  Agent 3 picks up from raw_reviews and populates
+customer_reviews automatically.
 
-When SIMULATION_TARGET=cloud, reviews are sent directly to Azure Event Hub
-instead of DuckDB.
+Use instead:
+    uv run python -m simulation.cloud_review_generator --mode canned
+    uv run python -m simulation.cloud_review_generator --mode llm --count 20
 
-Usage:
-    uv run python -m simulation.customer_review_simulator
-    uv run python -m simulation.customer_review_simulator --db /path/to/event_hubs.duckdb
+The CANNED_REVIEWS list has been moved to cloud_review_generator.py.
+This file re-exports it for backward compatibility only.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-import logging
-import os
-import sys
-from datetime import datetime
-from pathlib import Path
+import warnings
 
-import duckdb
-from dotenv import load_dotenv
-
-load_dotenv("local.env")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-CANNED_REVIEWS = [
-    "Honestly one of the worst chocolates I've tried. It tasted stale and had a strange waxy texture.",
-    "Not impressed. The chocolate was overly sweet and the flavor felt artificial.",
-    "I expected more richness, but it was pretty bland and didn't melt nicely.",
-    "The chocolate itself was okay, but the aftertaste was oddly bitter.",
-    "It's decent chocolate. Nothing special, but it's fine for a quick snack.",
-    "Pretty good overall. Smooth texture, though I wish the cocoa flavor was a bit stronger.",
-    "Nice creamy texture and balanced sweetness. I'd definitely buy this again.",
-    "Really enjoyable chocolate—rich, smooth, and not too sweet.",
-    "This chocolate is fantastic. Deep cocoa flavor and melts perfectly.",
-    "Absolutely delicious. Smooth, rich, and easily one of the best chocolates I've had.",
-    "honestly the sea salt caramel ones were kinda disappointing. caramel tasted weird.",
-    "that 85% dark bar is just straight bitter… not enjoyable at all.",
-    "the espresso bites tasted burnt to me.",
-    "those cherry cordials were way too syrupy.",
-    "orange peel chocolate sounded good but the peel was super chewy.",
-    "raspberry dark chocolate bar was kinda sour.",
-    "almond bark had too many almonds and barely any chocolate.",
-    "the mint thins taste fake… like toothpaste.",
-    "regular milk chocolate bar was just meh. nothing special.",
-    "peanut clusters were stale when I opened the bag.",
-    "caramel squares were messy and stuck to my teeth.",
-    "honeycomb chocolate barely had any crunch.",
-    "hazelnut bar tasted waxy.",
-    "pretzel bites were soft instead of crunchy.",
-    "toffee squares were way too hard.",
-    "chocolate raisins had a weird taste.",
-    "white chocolate raspberry bark was just sugar overload.",
-    "macadamia white chocolate had stale nuts.",
-    "lemon truffles tasted artificial.",
-    "coconut white chocolate was greasy.",
-    "strawberry cream chocolates were way too sweet.",
-    "peppermint white chocolate had way too much mint.",
-    "pistachio chocolate barely had pistachios.",
-    "cranberry chocolate was super tart.",
-    "champagne truffles didn’t really taste like champagne.",
-    "salted caramel truffles were too salty for me.",
-    "lavender truffles honestly tasted like soap.",
-    "earl grey truffles were kinda strange.",
-    "bourbon truffles were way too strong.",
-    "matcha truffles tasted grassy.",
-    "hazelnut praline truffles were okay but too sugary.",
-    "passion fruit truffles were kinda sour.",
-    "the big milk chocolate bar was fine but basic.",
-    "almond dark chocolate bar was decent.",
-    "sea salt caramel bar had uneven caramel.",
-    "cookie crunch bar was a bit stale tasting.",
-    "mint dark chocolate bar was okay.",
-    "raspberry dark chocolate was pretty tart.",
-    "peanut butter chocolate bar was salty.",
-    "toffee crunch bar stuck in my teeth.",
-    "cherry cordial box was kinda hit or miss.",
-    "cream center assortment was average.",
-    "caramel filled chocolates were decent.",
-    "nut clusters were alright.",
-    "fruit cream chocolates were a little sweet.",
-    "coffee cream chocolates were pretty good actually.",
-    "nougat chocolates were soft but mild.",
-    "marzipan chocolate was fine but dense.",
-    "coconut bonbons were sweeter than expected.",
-    "peanut butter cups were good but not amazing.",
-    "plain milk chocolate bar was smooth.",
-    "peanut clusters were actually pretty tasty.",
-    "almond bark had a nice crunch.",
-    "chocolate orange peel had a nice citrus kick.",
-    "raspberry dark chocolate was kinda nice.",
-    "mint thins were refreshing.",
-    "hazelnut milk chocolate bar was good.",
-    "pretzel chocolate bites had a good sweet/salty thing going.",
-    "toffee milk chocolate squares were crunchy.",
-    "chocolate raisins make a good snack.",
-    "raspberry white chocolate bark was pretty good.",
-    "macadamia white chocolate was rich.",
-    "lemon truffles were bright and citrusy.",
-    "coconut white chocolate tasted tropical.",
-    "strawberry cream chocolates were smooth.",
-    "peppermint white chocolate was nice and cool.",
-    "pistachio chocolate had good texture.",
-    "cranberry white chocolate had a nice tartness.",
-    "champagne truffles felt fancy.",
-    "salted caramel truffles were really nice.",
-    "lavender honey truffles were surprisingly good.",
-    "earl grey truffles had a cool tea flavor.",
-    "bourbon truffles had a deep flavor.",
-    "matcha truffles were interesting actually.",
-    "hazelnut praline truffles were rich.",
-    "passion fruit truffles had a fun tropical taste.",
-    "big milk chocolate bar melts really well.",
-    "dark almond bar had great roasted almond flavor.",
-    "caramel sea salt bar is addictive.",
-    "cookie crunch chocolate bar was fun to eat.",
-    "mint dark chocolate bar is super refreshing.",
-    "raspberry dark chocolate bar was really good.",
-    "peanut butter chocolate bar was creamy.",
-    "toffee crunch bar had great texture.",
-    "cherry cordial box was delicious.",
-    "cream assortment had some really good ones.",
-    "caramel chocolates were super smooth.",
-    "nut clusters were awesome.",
-    "fruit cream chocolates were surprisingly good.",
-    "coffee cream chocolates were perfect with coffee.",
-    "nougat chocolates were soft and tasty.",
-    "marzipan chocolates were great if you like almond flavor.",
-    "coconut bonbons were really good.",
-    "peanut butter cups were dangerously addictive.",
-    "sea salt caramel dark chocolates are amazing.",
-    "that 85% dark bar is intense but really good.",
-    "espresso dark chocolate bites are fantastic.",
-    "cherry cordials were incredible.",
-    "orange peel dark chocolate was amazing.",
-    "the raspberry dark chocolate is honestly one of my favorites."
-]
-
-
-_DEFAULT_DB = str(Path(__file__).resolve().parents[1] / "event_hubs.duckdb")
-
-_DDL = """\
-CREATE TABLE IF NOT EXISTS customer_reviews (
-    id                  INTEGER PRIMARY KEY,
-    review_text         VARCHAR NOT NULL,
-    sentiment_category  VARCHAR,
-    sentiment_score     DOUBLE,
-    status              VARCHAR NOT NULL DEFAULT 'To be processed',
-    chatbot_statement   VARCHAR,
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    processed_at        TIMESTAMP,
-    error_message       VARCHAR,
-    retry_count         INTEGER DEFAULT 0,
-    last_retry_at       TIMESTAMP
-);
-"""
-
-
-def seed_reviews(db_path: str) -> None:
-    """Insert all canned reviews into the customer_reviews table (DuckDB)."""
-    con = duckdb.connect(db_path)
-    try:
-        con.execute(_DDL)
-
-        row = con.execute("SELECT COALESCE(MAX(id), 0) FROM customer_reviews").fetchone()
-        next_id = row[0] + 1
-
-        for i, review_text in enumerate(CANNED_REVIEWS):
-            review_id = next_id + i
-            con.execute(
-                "INSERT INTO customer_reviews (id, review_text, status) VALUES (?, ?, ?)",
-                [review_id, review_text, "To be processed"],
-            )
-            logger.info("Inserted review %d: %.60s...", review_id, review_text)
-
-        logger.info("Seeded %d reviews into %s", len(CANNED_REVIEWS), db_path)
-    finally:
-        con.close()
-
-
-def seed_reviews_cloud() -> None:
-    """Send all canned reviews to Azure Event Hub as events."""
-    from simulation.shared.config import DatabaseConfig
-    from azure.eventhub import EventHubProducerClient, EventData
-    from azure.identity import DefaultAzureCredential
-
-    cfg = DatabaseConfig()
-    if not cfg.eventhub_connection_string or not cfg.eventhub_name:
-        logger.error("Event Hub config incomplete — cannot seed reviews to cloud")
-        sys.exit(1)
-
-    namespace = cfg.eventhub_connection_string.split("//")[1].split("/")[0]
-    credential = DefaultAzureCredential()
-    producer = EventHubProducerClient(
-        fully_qualified_namespace=namespace,
-        eventhub_name=cfg.eventhub_name,
-        credential=credential,
-    )
-
-    try:
-        batch = producer.create_batch()
-        for i, review_text in enumerate(CANNED_REVIEWS, start=1):
-            event_body = json.dumps({
-                "eventType": "customer_review",
-                "id": i,
-                "review_text": review_text,
-                "status": "To be processed",
-                "created_at": datetime.now().isoformat(),
-            })
-            try:
-                batch.add(EventData(event_body))
-            except ValueError:
-                # Batch full — send it and start a new one
-                producer.send_batch(batch)
-                batch = producer.create_batch()
-                batch.add(EventData(event_body))
-            logger.info("Queued review %d: %.60s...", i, review_text)
-
-        producer.send_batch(batch)
-        logger.info("Sent %d reviews to Event Hub", len(CANNED_REVIEWS))
-    finally:
-        producer.close()
+# Re-export from the canonical location for backward compatibility
+from simulation.cloud_review_generator import CANNED_REVIEWS  # noqa: F401
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Customer review simulator")
-    parser.add_argument(
-        "--db",
-        type=str,
-        default=_DEFAULT_DB,
-        help="Path to event_hubs DuckDB file (default: event_hubs.duckdb)",
+    warnings.warn(
+        "customer_review_simulator is deprecated",
+        DeprecationWarning,
+        stacklevel=2,
     )
-    args = parser.parse_args()
-
-    use_cloud = os.getenv("SIMULATION_TARGET", "local").lower() == "cloud"
-
-    if use_cloud:
-        logger.info("SIMULATION_TARGET=cloud — sending reviews to Event Hub")
-        seed_reviews_cloud()
-    else:
-        logger.info("Seeding reviews into %s", args.db)
-        seed_reviews(args.db)
-
-    logger.info("Done")
+    from simulation.cloud_review_generator import main as generator_main
+    generator_main()
 
 
 if __name__ == "__main__":

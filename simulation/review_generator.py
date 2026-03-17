@@ -391,6 +391,12 @@ def main() -> None:
         default=0,
         help="Seconds between events (0 = batch send, default: 0)",
     )
+    parser.add_argument(
+        "--target",
+        choices=["auto", "local", "cloud"],
+        default="auto",
+        help="Force local (DuckDB) or cloud (EventHub) target (default: auto-detect)",
+    )
     args = parser.parse_args()
 
     if args.mode == "llm":
@@ -401,7 +407,9 @@ def main() -> None:
         random.shuffle(reviews)
         logger.info("Using %d canned reviews (shuffled)", len(reviews))
 
-    if _is_cloud_target():
+    use_cloud = (args.target == "cloud") or (args.target == "auto" and _is_cloud_target())
+
+    if use_cloud:
         logger.info("Cloud target detected — publishing to EventHub")
         _seed_cloud(reviews, drip_seconds=args.drip)
     else:

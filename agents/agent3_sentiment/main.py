@@ -66,6 +66,7 @@ async def _background_local_loop() -> None:
                 logger.info("Local poller: %d raw review(s) to process", len(pending))
             for row in pending:
                 try:
+                    db.insert_review(row["id"], row["review_text"])
                     await analyze_review(row["id"], row["review_text"])
                     db.mark_raw_review_consumed(row["id"])
                 except Exception as exc:
@@ -99,7 +100,9 @@ async def _eventhub_consumer_loop() -> None:
     from datetime import datetime, timezone
 
     loop = asyncio.get_running_loop()
-    consumer = create_consumer()
+    # The workflow is a singleton that rejects concurrent runs,
+    # so serialise calls to analyze_review across partition threads.
+    process_lock = asyncio.Lock()
 
     def on_event(partition_context, event):
         """Callback invoked per event by the EventHub SDK (runs in a thread)."""
@@ -118,9 +121,13 @@ async def _eventhub_consumer_loop() -> None:
 
             logger.info("Received raw review %s from partition %s", review_id, partition_context.partition_id)
 
+            async def _process():
+                async with process_lock:
+                    return await analyze_review(review_id, review_text)
+
             # Run the async pipeline from this sync callback
             result = asyncio.run_coroutine_threadsafe(
-                analyze_review(review_id, review_text), loop
+                _process(), loop
             ).result(timeout=120)
 
             # Enrich result with original event data
@@ -152,20 +159,36 @@ async def _eventhub_consumer_loop() -> None:
         )
 
     logger.info("Starting EventHub consumer for raw-reviews…")
+    # Discover partitions, then create one consumer per partition so that
+    # each receive() call owns its own client (the SDK only supports one
+    # active receive() per EventHubConsumerClient).
+    probe = create_consumer()
+    partition_ids = probe.get_eventhub_properties()["partition_ids"]
+    probe.close()
+    logger.info("EventHub partitions: %s", partition_ids)
+
+    consumers = [create_consumer() for _ in partition_ids]
     try:
-        # receive() blocks — run it in a thread so we don't block the event loop
-        await loop.run_in_executor(
-            None,
-            lambda: consumer.receive(
-                on_event=on_event,
-                on_error=on_error,
-                starting_position="-1",  # beginning of stream
-            ),
-        )
+        futures = []
+        for consumer, pid in zip(consumers, partition_ids):
+            fut = loop.run_in_executor(
+                None,
+                lambda c=consumer, p=pid: c.receive(
+                    on_event=on_event,
+                    on_error=on_error,
+                    starting_position="-1",
+                    partition_id=p,
+                    max_wait_time=60,
+                ),
+            )
+            futures.append(fut)
+
+        await asyncio.gather(*futures)
     except asyncio.CancelledError:
         logger.info("EventHub consumer loop cancelled, closing…")
     finally:
-        consumer.close()
+        for c in consumers:
+            c.close()
         close_producer()
 
 
@@ -209,6 +232,7 @@ app = FastAPI(
 )
 
 configure_telemetry(app, service_name="agent3-sentiment")
+logging.getLogger().setLevel(logging.INFO)  # OTEL LoggingInstrumentor resets root to WARNING
 
 app.add_middleware(
     CORSMiddleware,

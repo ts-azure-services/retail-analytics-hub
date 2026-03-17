@@ -1,0 +1,7 @@
+# Override for local mode — blanks EventHub vars so agents use DuckDB polling
+services:
+  agent3-sentiment:
+    environment:
+      - EVENTHUB_NAMESPACE=
+      - EVENTHUB_RAW_NAME=
+      - EVENTHUB_PROCESSED_NAME=

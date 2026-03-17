@@ -111,11 +111,12 @@ create-agent-sp: ## [util] Create service principal for Docker agent containers
 			--scope "$$OPENAI_ID" \
 			-o none; \
 		if [ -n "$$EVENTHUB_ID" ]; then \
-			echo "Assigning additional role: Azure Event Hubs Data Sender"; \
+			EVENTHUB_NS_ID=$$(echo "$$EVENTHUB_ID" | sed 's|/eventhubs/.*||'); \
+			echo "Assigning additional role: Azure Event Hubs Data Owner (namespace)"; \
 			az role assignment create \
 				--assignee "$$CLIENT_ID" \
-				--role "Azure Event Hubs Data Sender" \
-				--scope "$$EVENTHUB_ID" \
+				--role "Azure Event Hubs Data Owner" \
+				--scope "$$EVENTHUB_NS_ID" \
 				-o none; \
 		fi; \
 		if [ -n "$$COSMOSDB_ID" ]; then \
@@ -164,9 +165,15 @@ delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purg
 	@if [ -z "$(tagged_rgs)" ]; then \
 		echo "No local-tagged resource groups found — skipping."; \
 	else \
+		echo "Issuing parallel deletes (--no-wait)..."; \
 		for rg in $(tagged_rgs); do \
-			echo "Deleting resource group: $$rg"; \
-			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
+			echo "  Deleting resource group: $$rg"; \
+			az group delete --subscription "$(subscription_id)" --yes --no-wait -n "$$rg" 2>&1 || true; \
+		done; \
+		echo "Waiting for resource group deletions to complete..."; \
+		for rg in $(tagged_rgs); do \
+			az group wait --subscription "$(subscription_id)" --deleted -n "$$rg" 2>/dev/null || true; \
+			echo "  ✓ $$rg deleted"; \
 		done; \
 	fi
 	@echo "Purging all soft-deleted Cognitive Services accounts..."
@@ -477,37 +484,43 @@ clean-simulation: ## [util] Reset databases (cleanse + re-seed)
 
 seed-reviews: ## [core] Seed raw reviews into event_hubs.duckdb (Agent 3 processes them)
 	@echo "📝 Seeding raw reviews..."
-	uv run python -m simulation.review_generator --mode canned
+	uv run python -m simulation.review_generator --mode canned --target local
 
 seed-reviews-llm: ## [util] Generate LLM reviews into raw_reviews (local DuckDB)
 	@COUNT=$${COUNT:-5}; \
 	echo "🤖 Generating $$COUNT LLM reviews into raw_reviews..."; \
-	uv run python -m simulation.review_generator --mode llm --count $$COUNT
+	uv run python -m simulation.review_generator --mode llm --count $$COUNT --target local
 
 check-raw-reviews: ## [util] Show pending raw reviews in event_hubs.duckdb
 	@echo "📋 Pending raw reviews (consumed=false):"
 	@uv run python -c "import duckdb; \
 	con = duckdb.connect('event_hubs.duckdb', read_only=True); \
-	total = con.execute('SELECT count(*) FROM raw_reviews').fetchone()[0]; \
-	pending = con.execute('SELECT count(*) FROM raw_reviews WHERE consumed = false').fetchone()[0]; \
-	print(f'  Total: {total}  |  Pending: {pending}  |  Consumed: {total - pending}')"
+	tables = [r[0] for r in con.execute(\"SELECT table_name FROM information_schema.tables WHERE table_schema='main'\").fetchall()]; \
+	has = 'raw_reviews' in tables; \
+	total = con.execute('SELECT count(*) FROM raw_reviews').fetchone()[0] if has else 0; \
+	pending = con.execute('SELECT count(*) FROM raw_reviews WHERE consumed = false').fetchone()[0] if has else 0; \
+	print(f'  Total: {total}  |  Pending: {pending}  |  Consumed: {total - pending}') if has else print('  Table raw_reviews does not exist yet')"
 
 check-reviews: ## [util] Show processed customer reviews in event_hubs.duckdb
 	@echo "📋 Customer reviews:"
 	@uv run python -c "import duckdb; \
 	con = duckdb.connect('event_hubs.duckdb', read_only=True); \
-	total = con.execute('SELECT count(*) FROM customer_reviews').fetchone()[0]; \
-	print(f'  Total processed: {total}'); \
-	rows = con.execute('SELECT product_id, sentiment, response_text FROM customer_reviews ORDER BY id DESC LIMIT 5').fetchall(); \
-	print('  Last 5:'); \
-	[print(f'    {r[0]} | {r[1]} | {r[2][:60]}...') for r in rows]"
+	tables = [r[0] for r in con.execute(\"SELECT table_name FROM information_schema.tables WHERE table_schema='main'\").fetchall()]; \
+	has = 'customer_reviews' in tables; \
+	total = con.execute('SELECT count(*) FROM customer_reviews').fetchone()[0] if has else 0; \
+	print(f'  Total processed: {total}') if has else print('  Table customer_reviews does not exist yet (Agent 3 has not processed any reviews)'); \
+	rows = con.execute('SELECT id, sentiment_category, chatbot_statement FROM customer_reviews ORDER BY id DESC LIMIT 5').fetchall() if has and total > 0 else []; \
+	print('  Last 5:') if rows else None; \
+	na = 'N/A'; \
+	[print(f'    {r[0]} | {r[1]} | {(r[2] or na)[:60]}') for r in rows]"
 
 clean-reviews: ## [util] Truncate raw_reviews and customer_reviews tables
 	@echo "🗑  Clearing review tables..."
 	@uv run python -c "import duckdb; \
 	con = duckdb.connect('event_hubs.duckdb'); \
-	con.execute('DELETE FROM customer_reviews'); \
-	con.execute('DELETE FROM raw_reviews'); \
+	tables = [r[0] for r in con.execute(\"SELECT table_name FROM information_schema.tables WHERE table_schema='main'\").fetchall()]; \
+	[con.execute('DELETE FROM customer_reviews') if 'customer_reviews' in tables else None]; \
+	[con.execute('DELETE FROM raw_reviews') if 'raw_reviews' in tables else None]; \
 	print('✓ raw_reviews + customer_reviews cleared')"
 
 
@@ -530,17 +543,17 @@ run-all-workflows-cloud: check-cloud ## [core] Run all workflows writing directl
 
 seed-reviews-cloud: check-cloud ## [core] Send raw reviews to EventHub (Agent 3 consumes & processes)
 	@echo "📝 Sending raw reviews to EventHub..."
-	uv run python -m simulation.review_generator --mode canned
+	uv run python -m simulation.review_generator --mode canned --target cloud
 
 seed-reviews-cloud-drip: check-cloud ## [util] Drip-feed reviews to EventHub (DRIP=seconds between events)
 	@DRIP=$${DRIP:-3}; \
 	echo "📝 Drip-feeding reviews to EventHub (every $$DRIP s)..."; \
-	uv run python -m simulation.review_generator --mode canned --drip $$DRIP
+	uv run python -m simulation.review_generator --mode canned --drip $$DRIP --target cloud
 
 seed-reviews-cloud-llm: check-cloud ## [util] Generate LLM reviews to EventHub
 	@COUNT=$${COUNT:-5}; \
 	echo "🤖 Generating $$COUNT LLM reviews → EventHub..."; \
-	uv run python -m simulation.review_generator --mode llm --count $$COUNT
+	uv run python -m simulation.review_generator --mode llm --count $$COUNT --target cloud
 
 check-pg-firewall: ## [util] Check if your IP is in PostgreSQL firewall
 	@CURRENT_IP=$$(curl -s https://api.ipify.org); \
@@ -667,16 +680,138 @@ aspire-down: ## [util] Stop Aspire dashboard
 aspire-logs: ## [util] Tail Aspire dashboard logs
 	docker compose -f agents/docker-compose.yml logs -f aspire-dashboard
 
-agent3-start: ## [util] Start Agent 3 sentiment service (port 8003)
-	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
+agent3-build: ## [util] Build Agent 3 Docker image
+	@echo "🔨 Building agent3-sentiment image..."
+	docker compose -f agents/docker-compose.yml build agent3-sentiment
 
-agent3-dev: ## [util] Start Agent 3 with auto-reload (local DuckDB poller)
-	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003 --reload
+agent3-start: ## [util] Start Agent 3 container in local mode (port 8003)
+	@echo "🚀 Starting Agent 3 container (local/DuckDB mode)..."
+	docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml up -d agent3-sentiment
+	@echo "✓ Agent 3 running at http://localhost:8003"
+
+agent3-dev: ## [util] Start Agent 3 container in local mode with log tailing
+	@echo "🚀 Starting Agent 3 container (local/DuckDB mode, with logs)..."
+	docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml up --build agent3-sentiment
+
+agent3-stop: ## [util] Stop Agent 3 container
+	@echo "⏹  Stopping Agent 3 container..."
+	docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml stop agent3-sentiment
+	docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml rm -f agent3-sentiment
+
+agent3-logs: ## [util] Tail Agent 3 container logs
+	docker compose -f agents/docker-compose.yml logs -f agent3-sentiment
 
 agent3-cloud: ## [util] Start Agent 3 in cloud mode (EventHub consumer)
 	@echo "☁️  Starting Agent 3 with EventHub consumer..."
 	set -a && source local.env && set +a && \
-	uv run uvicorn agents.agent3_sentiment.main:app --host 0.0.0.0 --port 8003
+	docker compose -f agents/docker-compose.yml up --build agent3-sentiment
+
+agent3-cloud-detached: ## [util] Start Agent 3 in cloud mode (detached)
+	@echo "☁️  Starting Agent 3 with EventHub consumer (detached)..."
+	set -a && source local.env && set +a && \
+	docker compose -f agents/docker-compose.yml up -d --build agent3-sentiment
+
+test-reviews-local: ## [core] End-to-end local mode test: build → start → seed 5 LLM reviews → verify
+	@echo "═══════════════════════════════════════════════════════"
+	@echo "🏠 Local Mode End-to-End Test (5 LLM reviews)"
+	@echo "═══════════════════════════════════════════════════════"
+	@echo ""
+	@echo "① Stopping any running agent3 container..."
+	-@docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml stop agent3-sentiment 2>/dev/null
+	-@docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml rm -f agent3-sentiment 2>/dev/null
+	@echo ""
+	@echo "② Clearing review tables..."
+	@uv run python -c "import duckdb; \
+	con = duckdb.connect('event_hubs.duckdb'); \
+	tables = [r[0] for r in con.execute(\"SELECT table_name FROM information_schema.tables WHERE table_schema='main'\").fetchall()]; \
+	[con.execute('DELETE FROM customer_reviews') if 'customer_reviews' in tables else None]; \
+	[con.execute('DELETE FROM raw_reviews') if 'raw_reviews' in tables else None]; \
+	print('✓ Review tables cleared')"
+	@echo ""
+	@echo "③ Building and starting agent3 in local mode..."
+	@docker compose -f agents/docker-compose.yml -f agents/docker-compose.local.yml up -d --build agent3-sentiment
+	@echo ""
+	@echo "④ Waiting 10s for agent3 to start polling..."
+	@sleep 10
+	@echo ""
+	@echo "⑤ Generating 5 LLM reviews → DuckDB raw_reviews..."
+	@set -a && source local.env && set +a && \
+	uv run python -m simulation.review_generator --mode llm --count 5 --target local
+	@echo ""
+	@echo "⑥ Waiting for processing (polling every 5s, up to 3 min)..."
+	@timeout 180 bash -c '\
+		while true; do \
+			TOTAL=$$(uv run python -c "import duckdb; con = duckdb.connect(\"event_hubs.duckdb\", read_only=True); print(con.sql(\"SELECT count(*) FROM customer_reviews\").fetchone()[0])" 2>/dev/null || echo 0); \
+			echo "   Processed so far: $$TOTAL / 5"; \
+			if [ "$$TOTAL" -ge 5 ]; then \
+				echo ""; \
+				echo "✅ All 5 reviews processed!"; \
+				break; \
+			fi; \
+			sleep 5; \
+		done' || echo "⚠️  Timed out — check logs with: make agent3-logs"
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════"
+	@echo "⑦ Results"
+	@echo "═══════════════════════════════════════════════════════"
+	@uv run python -c "import duckdb; \
+	con = duckdb.connect('event_hubs.duckdb', read_only=True); \
+	tables = [r[0] for r in con.execute(\"SELECT table_name FROM information_schema.tables WHERE table_schema='main'\").fetchall()]; \
+	raw = con.execute('SELECT count(*) FROM raw_reviews').fetchone()[0] if 'raw_reviews' in tables else 0; \
+	done = con.execute('SELECT count(*) FROM customer_reviews').fetchone()[0] if 'customer_reviews' in tables else 0; \
+	print(f'   Raw reviews:       {raw}'); \
+	print(f'   Processed reviews: {done}'); \
+	rows = con.execute('SELECT id, sentiment_category, chatbot_statement FROM customer_reviews ORDER BY id LIMIT 5').fetchall() if 'customer_reviews' in tables and done > 0 else []; \
+	print(''); \
+	[print(f'   {r[0]} | {r[1]:10s} | {(r[2] or \"N/A\")[:55]}') for r in rows]"
+	@echo ""
+	@echo "⑧ Container still running — use 'make agent3-stop' when done."
+
+test-reviews-cloud: ## [core] End-to-end cloud mode test: build → start → seed 5 LLM reviews → verify
+	@echo "═══════════════════════════════════════════════════════"
+	@echo "☁️  Cloud Mode End-to-End Test (5 LLM reviews)"
+	@echo "═══════════════════════════════════════════════════════"
+	@echo ""
+	@echo "① Stopping any running agent3 container..."
+	-@docker compose -f agents/docker-compose.yml stop agent3-sentiment 2>/dev/null
+	-@docker compose -f agents/docker-compose.yml rm -f agent3-sentiment 2>/dev/null
+	@echo ""
+	@echo "② Building and starting agent3 in cloud mode..."
+	@set -a && source local.env && set +a && \
+	docker compose -f agents/docker-compose.yml up -d --build agent3-sentiment
+	@echo ""
+	@echo "③ Waiting 15s for partition claiming..."
+	@sleep 15
+	@docker logs agents-agent3-sentiment-1 2>&1 \
+		| grep -E "partition|claimed" || true
+	@echo ""
+	@echo "④ Generating 5 LLM reviews → raw-reviews EventHub..."
+	@uv run python -m simulation.review_generator --mode llm --count 5 --target cloud
+	@echo ""
+	@echo "⑤ Monitoring processing (Ctrl-C to stop watching — processing continues)..."
+	@echo "   (will auto-stop after 3 min or when all 5 reviews are processed)"
+	@timeout 180 bash -c '\
+		docker logs -f agents-agent3-sentiment-1 2>&1 \
+		| grep --line-buffered -E "Received raw|Published|Error proc" \
+		| while IFS= read -r line; do \
+			echo "$$line"; \
+			count=$$(docker logs agents-agent3-sentiment-1 2>&1 | grep -c "Published processed"); \
+			if [ "$$count" -ge 5 ]; then \
+				echo ""; \
+				echo "✅ All reviews processed ($$count published)"; \
+				break; \
+			fi; \
+		done' || true
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════"
+	@echo "⑥ Results Summary"
+	@echo "═══════════════════════════════════════════════════════"
+	@PUBLISHED=$$(docker logs agents-agent3-sentiment-1 2>&1 | grep -c "Published processed" || echo 0); \
+	ERRORS=$$(docker logs agents-agent3-sentiment-1 2>&1 | grep -c "Error proc" || echo 0); \
+	echo "   Published:  $$PUBLISHED"; \
+	echo "   Errors:     $$ERRORS"; \
+	echo ""
+	@echo "⑦ Container still running — use 'make agent3-stop' when done."
 
 # =============================================================================
 ##@ Infrastructure (Cloud)

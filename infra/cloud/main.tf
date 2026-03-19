@@ -136,8 +136,9 @@ resource "azurerm_resource_group" "example" {
 # MICROSOFT FABRIC CAPACITY AND WORKSPACE
 # =============================================================================
 
-# Create a Fabric Capacity
+# Create a Fabric Capacity (dev only — prod uses a separately managed capacity)
 resource "azurerm_fabric_capacity" "example" {
+  count               = local.is_prod ? 0 : 1
   name                = "fcfabric${random_string.suffix.result}"
   resource_group_name = azurerm_resource_group.example.name
   location            = "WestUS3"
@@ -152,9 +153,10 @@ resource "azurerm_fabric_capacity" "example" {
   tags = local.common_tags
 }
 
-# Get the Fabric Capacity details
+# Get the Fabric Capacity details (dev only)
 data "fabric_capacity" "example" {
-  display_name = azurerm_fabric_capacity.example.name
+  count        = local.is_prod ? 0 : 1
+  display_name = azurerm_fabric_capacity.example[0].name
 
   lifecycle {
     postcondition {
@@ -164,9 +166,10 @@ data "fabric_capacity" "example" {
   }
 }
 
-# Create a Fabric Workspace
+# Create a Fabric Workspace (dev only)
 resource "fabric_workspace" "example" {
-  capacity_id  = data.fabric_capacity.example.id
+  count        = local.is_prod ? 0 : 1
+  capacity_id  = data.fabric_capacity.example[0].id
   display_name = "ws-fabric-${random_string.suffix.result}"
 }
 
@@ -849,8 +852,9 @@ resource "azurerm_cognitive_account" "openai" {
   tags = local.common_tags
 }
 
-# Create GPT-4o-mini Deployment
+# Create GPT-4o-mini Deployment (dev only — prod uses existing deployments to avoid quota conflicts)
 resource "azurerm_cognitive_deployment" "gpt4o_mini" {
+  count                = local.is_prod ? 0 : 1
   name                 = "gpt-4o-mini"
   cognitive_account_id = azurerm_cognitive_account.openai.id
 
@@ -866,8 +870,9 @@ resource "azurerm_cognitive_deployment" "gpt4o_mini" {
   }
 }
 
-# Create GPT-5.1 Deployment
+# Create GPT-5.2 Deployment (dev only — prod uses existing deployments to avoid quota conflicts)
 resource "azurerm_cognitive_deployment" "gpt52" {
+  count                = local.is_prod ? 0 : 1
   name                 = "gpt-5.2"
   cognitive_account_id = azurerm_cognitive_account.openai.id
 
@@ -1097,6 +1102,8 @@ resource "azurerm_private_endpoint" "keyvault" {
   resource_group_name = azurerm_resource_group.example.name
   subnet_id           = azurerm_subnet.keyvault_pe[0].id
 
+  depends_on = [azurerm_subnet_network_security_group_association.keyvault]
+
   private_service_connection {
     name                           = "psc-keyvault"
     private_connection_resource_id = azurerm_key_vault.main.id
@@ -1119,6 +1126,8 @@ resource "azurerm_private_endpoint" "cosmosdb" {
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
   subnet_id           = azurerm_subnet.privateendpoints[0].id
+
+  depends_on = [azurerm_subnet_network_security_group_association.privateendpoints]
 
   private_service_connection {
     name                           = "psc-cosmosdb"
@@ -1143,6 +1152,8 @@ resource "azurerm_private_endpoint" "eventhub" {
   resource_group_name = azurerm_resource_group.example.name
   subnet_id           = azurerm_subnet.privateendpoints[0].id
 
+  depends_on = [azurerm_subnet_network_security_group_association.privateendpoints]
+
   private_service_connection {
     name                           = "psc-eventhub"
     private_connection_resource_id = azurerm_eventhub_namespace.example.id
@@ -1165,6 +1176,8 @@ resource "azurerm_private_endpoint" "cognitive" {
   location            = azurerm_resource_group.example.location
   resource_group_name = azurerm_resource_group.example.name
   subnet_id           = azurerm_subnet.privateendpoints[0].id
+
+  depends_on = [azurerm_subnet_network_security_group_association.privateendpoints]
 
   private_service_connection {
     name                           = "psc-cognitive"
@@ -1203,7 +1216,7 @@ resource "azurerm_private_endpoint" "acr" {
 
   tags = local.common_tags
 
-  depends_on = [azurerm_key_vault.main]
+  depends_on = [azurerm_key_vault.main, azurerm_subnet_network_security_group_association.privateendpoints]
 }
 
 # =============================================================================
@@ -1245,6 +1258,11 @@ resource "azurerm_container_app_environment" "env" {
   # dev: no VNET (fast deploy/destroy); prod: VNET integration
   infrastructure_subnet_id       = local.is_prod ? azurerm_subnet.containerapp[0].id : null
   internal_load_balancer_enabled = local.is_prod ? false : null
+
+  # Ensure NSG is fully attached to the subnet before the CAE starts using it.
+  # Without this, the NSG association and CAE both modify the subnet concurrently,
+  # causing ARM conflicts and container app provisioning timeouts.
+  depends_on = [azurerm_subnet_network_security_group_association.containerapp]
 
   tags = local.common_tags
 }
@@ -1386,10 +1404,7 @@ resource "azurerm_container_app" "dashboard" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "system"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = true
@@ -1508,10 +1523,7 @@ resource "azurerm_container_app" "agent1" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "system"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = false
@@ -1606,10 +1618,7 @@ resource "azurerm_container_app" "agent2" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "system"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = false
@@ -1704,10 +1713,7 @@ resource "azurerm_container_app" "agent3" {
 
   identity { type = "SystemAssigned" }
 
-  registry {
-    server   = azurerm_container_registry.acr.login_server
-    identity = "system"
-  }
+  # registry block added by `make cloud-deploy` after AcrPull role exists
 
   ingress {
     external_enabled = false
@@ -2036,16 +2042,16 @@ resource "azurerm_monitor_diagnostic_setting" "acr" {
 # OUTPUTS
 # =============================================================================
 
-# Details of the Fabric Capacity
+# Details of the Fabric Capacity (dev only)
 output "fabric_capacity" {
-  value       = data.fabric_capacity.example
-  description = "The Fabric Capacity object"
+  value       = local.is_prod ? null : data.fabric_capacity.example[0]
+  description = "The Fabric Capacity object (null in prod)"
 }
 
-# Details of the Fabric Workspace
+# Details of the Fabric Workspace (dev only)
 output "fabric_workspace" {
-  value       = fabric_workspace.example
-  description = "The Fabric Workspace object"
+  value       = local.is_prod ? null : fabric_workspace.example[0]
+  description = "The Fabric Workspace object (null in prod)"
 }
 
 # Resource Group Name
@@ -2253,14 +2259,14 @@ output "openai_endpoint" {
 
 # GPT-4o-mini Deployment Name
 output "openai_deployment_gpt4o_mini" {
-  value       = azurerm_cognitive_deployment.gpt4o_mini.name
+  value       = local.is_prod ? "gpt-4o-mini" : azurerm_cognitive_deployment.gpt4o_mini[0].name
   description = "The name of the GPT-4o-mini deployment"
 }
 
-# GPT-5.1 Deployment Name
+# GPT-5.2 Deployment Name
 output "openai_deployment_gpt52" {
-  value       = azurerm_cognitive_deployment.gpt52.name
-  description = "The name of the GPT-5.1 deployment"
+  value       = local.is_prod ? "gpt-5.2" : azurerm_cognitive_deployment.gpt52[0].name
+  description = "The name of the GPT-5.2 deployment"
 }
 
 # Container App Job (Importer) Name
@@ -2345,13 +2351,13 @@ resource "local_file" "env_file" {
     EVENTHUB_CONNECTION_STRING='${azurerm_eventhub_authorization_rule.example.primary_connection_string}'
 
     AZURE_OPENAI_ENDPOINT=${azurerm_cognitive_account.openai.endpoint}
-    AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI=${azurerm_cognitive_deployment.gpt4o_mini.name}
-    AZURE_OPENAI_DEPLOYMENT_GPT52=${azurerm_cognitive_deployment.gpt52.name}
+    AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI=${local.is_prod ? "gpt-4o-mini" : azurerm_cognitive_deployment.gpt4o_mini[0].name}
+    AZURE_OPENAI_DEPLOYMENT_GPT52=${local.is_prod ? "gpt-5.2" : azurerm_cognitive_deployment.gpt52[0].name}
 
     STAGING_STORAGE_ACCOUNT=${azurerm_storage_account.staging.name}
     STAGING_STORAGE_CONN_STRING='${azurerm_storage_account.staging.primary_connection_string}'
 
-    FABRIC_WORKSPACE_ID=${fabric_workspace.example.id}
+    FABRIC_WORKSPACE_ID=${local.is_prod ? "" : fabric_workspace.example[0].id}
     FABRIC_SQL_ENDPOINT=${var.fabric_sql_endpoint}
 
     DASHBOARD_URL=https://${azurerm_container_app.dashboard.ingress[0].fqdn}

@@ -848,6 +848,7 @@ init-clean: ## [util] Initialize Terraform from clean state (retries on network 
 	rm -rf infra/cloud/.terraform
 	rm -rf infra/cloud/terraform.tfstate
 	rm -rf infra/cloud/terraform.tfstate.backup
+	rm -f infra/cloud/tfplan
 	@SUBSCRIPTION_ID=$$(az account show --query id -o tsv 2>/dev/null); \
 	if [ -z "$$SUBSCRIPTION_ID" ]; then \
 		echo "No active Azure subscription in az context. Run: az login && az account set --subscription <id>"; \
@@ -890,7 +891,7 @@ delete-cloud: ## [core] Delete cloud resource groups (tag: tf=cloud) and purge s
 	else \
 		for rg in $(tagged_rgs); do \
 			echo "Deleting resource group: $$rg"; \
-			az group delete --subscription "$(subscription_id)" --yes -n "$$rg" 2>&1 || true; \
+			az group delete --subscription "$(subscription_id)" --yes --no-wait -n "$$rg" 2>&1 || true; \
 		done; \
 	fi
 	@echo "Purging soft-deleted Key Vaults from deleted resource groups..."

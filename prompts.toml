@@ -1,17 +1,26 @@
 [readme]
 prompt = """
-Generate README.md for this retail simulation repository. The README must contain exactly two sections:
+Generate README.md for this retail simulation repository. The README is a concise entry-point that orients the reader and delegates detail to docs/. It must contain exactly these sections:
 
-1. **Title and description** — "# Retail Workflows" followed by a 2-3 sentence summary that covers: it's a discrete-event simulation framework built with SimPy, it simulates three interconnected retail workflows (omnichannel purchase, inventory replenishment, customer engagement), and it includes a parameter sweep pipeline that tunes assumptions and trains ML models on the generated data.
+1. **Title and description** — "# Retail Workflows" followed by a 2-sentence summary: discrete-event simulation framework built with SimPy for three retail workflows (omnichannel purchase, inventory replenishment, customer engagement), plus a closed-loop pipeline (sweep → recommend → apply → re-simulate). Second sentence: React dashboard with 36+ live metrics and three AI agents (Azure OpenAI).
 
-2. **Repo Structure** — A tree diagram inside a fenced code block showing every directory and Python file in the repository. Include one-line comments for each file/directory explaining its purpose. The tree must cover: simulation/ (shared/, workflows/, sweep/, ml/, run_simulation.py), analysis/, seed-data/, docs/, and Makefile. Verify the tree against actual files on disk.
+2. **How It Fits Together** — An ASCII flow diagram in a fenced code block showing the pipeline (seed → simulate → sweep → recommend → apply → re-simulate) and the runtime stack (dashboard ← agents ← MCP tools ← DuckDB → sync → Azure). Follow with a 3-4 sentence paragraph connecting the pieces: simulation generates data, sweeps explore parameter space, ML models train on swept data, dashboard and agents make it explorable, data stays local or syncs to Azure.
+
+3. **Prerequisites** — A single line listing: Python 3.12+ with uv, Node.js 18+, Docker, Terraform, Azure CLI.
+
+4. **Getting Started** — A fenced bash block with 4-5 commands (uv sync, make help, make seed, make simulate, make dashboard-start) with inline comments. No prose explanation.
+
+5. **Documentation** — A markdown table with columns Topic, Doc, Covers. One row per doc file in docs/ (currently 12: concepts, workflows, data, metrics, sweeps, ml, dashboard, agents, logging, sql-parity, security-checklist, testing). Each row links to the doc file and summarizes scope in a few words.
+
+6. **Repo Structure** — A directory-level tree in a fenced code block with one-line comments. Show top-level directories (simulation/, analysis/, agents/, dashboard/, sync/, infra/, seed-data/, fabric-admin-scripts/, docs/, Makefile) with key subdirectories but not individual files. Keep it compact.
 
 Constraints:
-- No Makefile commands or usage instructions
-- No output samples
-- No code snippets
-- No setup/installation section
-- No links to external resources
+- No subsystem detail paragraphs — delegate to docs/
+- No configuration section — covered in docs/concepts.md
+- No agent tables or port listings — covered in docs/agents.md
+- No output samples or code snippets (except the Getting Started bash block)
+- Repo structure tree stays at directory level, not file level
+- Verify doc links against actual files in docs/
 """
 
 [workflows-docs]

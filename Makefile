@@ -158,7 +158,7 @@ create-agent-sp: ## [util] Create service principal for Docker agent containers
 		echo "✓ Service principal created and credentials written to local.env"; \
 	fi
 
-delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purge soft-deleted resources
+delete-baseline: ## [core] Delete local resource groups (tag: tf=local), purge cognitive, clean app registrations
 	$(eval subscription_id := $(shell az account show --query id -o tsv))
 	$(eval tagged_rgs := $(shell az group list --subscription "$(subscription_id)" --query "[?tags.tf=='local'].name" -o tsv | tr -d '\r' | tr '\n' ' '))
 	@echo "Local resource groups to delete: $(tagged_rgs)"
@@ -170,12 +170,9 @@ delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purg
 			echo "  Deleting resource group: $$rg"; \
 			az group delete --subscription "$(subscription_id)" --yes --no-wait -n "$$rg" 2>&1 || true; \
 		done; \
-		echo "Waiting for resource group deletions to complete..."; \
-		for rg in $(tagged_rgs); do \
-			az group wait --subscription "$(subscription_id)" --deleted -n "$$rg" 2>/dev/null || true; \
-			echo "  ✓ $$rg deleted"; \
-		done; \
 	fi
+	@echo "Waiting 30 seconds for Cognitive Services accounts to enter soft-deleted state..."
+	@sleep 30
 	@echo "Purging all soft-deleted Cognitive Services accounts..."
 	@az cognitiveservices account list-deleted --subscription "$(subscription_id)" \
 		--query "[].[id, name, location]" -o tsv 2>/dev/null | \
@@ -195,7 +192,7 @@ delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purg
 	@echo "Cleaning up local Terraform state..."
 	@rm -f infra/local/terraform.tfstate infra/local/terraform.tfstate.backup infra/local/tfplan-local
 	@echo ""
-	@echo "\033[0;32m✅ Local infrastructure deleted and purged!\033[0m"
+	@echo "\033[0;32m✅ Deletes issued (RGs removing in background). Purge & app cleanup done.\033[0m"
 
 DUCKDB_FILES := local_postgres.duckdb local_cosmos.duckdb event_hubs.duckdb
 

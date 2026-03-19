@@ -550,6 +550,27 @@ resource "azurerm_private_dns_zone_virtual_network_link" "storage_file" {
   tags = local.common_tags
 }
 
+# DNS Private Zone for Storage Account (Blob)
+resource "azurerm_private_dns_zone" "storage_blob" {
+  count               = local.is_prod ? 1 : 0
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.example.name
+
+  tags = local.common_tags
+}
+
+# Link Storage Blob DNS Zone to VNET
+resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
+  count                 = local.is_prod ? 1 : 0
+  name                  = "storage-blob-vnet-link"
+  resource_group_name   = azurerm_resource_group.example.name
+  private_dns_zone_name = azurerm_private_dns_zone.storage_blob[0].name
+  virtual_network_id    = azurerm_virtual_network.main[0].id
+  registration_enabled  = false
+
+  tags = local.common_tags
+}
+
 # DNS Private Zone for Event Hub
 resource "azurerm_private_dns_zone" "eventhub" {
   count               = local.is_prod ? 1 : 0
@@ -687,10 +708,11 @@ resource "azurerm_key_vault" "main" {
   # Soft delete with 7 days retention
   soft_delete_retention_days = 7
 
-  # Public network access enabled initially (will be disabled after private endpoint)
+  # Public network access needed for Terraform to manage secrets.
+  # KV is protected by RBAC — only authorized principals can read/write.
+  # Private endpoint handles container-to-KV traffic within the VNET.
   public_network_access_enabled = true
 
-  # Network ACLs - allow all initially (will be restricted after private endpoint)
   network_acls {
     bypass         = "AzureServices"
     default_action = "Allow"
@@ -715,8 +737,9 @@ resource "azurerm_key_vault_secret" "postgresql_password" {
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
-# Store CosmosDB primary key in Key Vault (for legacy compatibility)
+# Store CosmosDB primary key in Key Vault (dev only — prod uses RBAC)
 resource "azurerm_key_vault_secret" "cosmosdb_primary_key" {
+  count        = local.is_prod ? 0 : 1
   name         = "cosmosdb-primary-key"
   value        = azurerm_cosmosdb_account.example.primary_key
   key_vault_id = azurerm_key_vault.main.id
@@ -724,8 +747,9 @@ resource "azurerm_key_vault_secret" "cosmosdb_primary_key" {
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
-# Store CosmosDB connection string in Key Vault (for legacy compatibility)
+# Store CosmosDB connection string in Key Vault (dev only — prod uses RBAC)
 resource "azurerm_key_vault_secret" "cosmosdb_connection_string" {
+  count        = local.is_prod ? 0 : 1
   name         = "cosmosdb-connection-string"
   value        = azurerm_cosmosdb_account.example.primary_sql_connection_string
   key_vault_id = azurerm_key_vault.main.id
@@ -733,28 +757,31 @@ resource "azurerm_key_vault_secret" "cosmosdb_connection_string" {
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
-# Store Event Hub connection string in Key Vault (for Fabric Eventstream)
+# Store Event Hub connection string in Key Vault (dev only — prod uses RBAC)
 resource "azurerm_key_vault_secret" "eventhub_connection_string" {
+  count        = local.is_prod ? 0 : 1
   name         = "eventhub-connection-string"
-  value        = azurerm_eventhub_authorization_rule.example.primary_connection_string
+  value        = azurerm_eventhub_authorization_rule.example[0].primary_connection_string
   key_vault_id = azurerm_key_vault.main.id
 
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
-# Store Event Hub primary key in Key Vault
+# Store Event Hub primary key in Key Vault (dev only)
 resource "azurerm_key_vault_secret" "eventhub_primary_key" {
+  count        = local.is_prod ? 0 : 1
   name         = "eventhub-primary-key"
-  value        = azurerm_eventhub_authorization_rule.example.primary_key
+  value        = azurerm_eventhub_authorization_rule.example[0].primary_key
   key_vault_id = azurerm_key_vault.main.id
 
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
 }
 
-# Store raw-reviews Event Hub connection string in Key Vault
+# Store raw-reviews Event Hub connection string in Key Vault (dev only)
 resource "azurerm_key_vault_secret" "eventhub_raw_connection_string" {
+  count        = local.is_prod ? 0 : 1
   name         = "eventhub-raw-connection-string"
-  value        = azurerm_eventhub_authorization_rule.raw_reviews.primary_connection_string
+  value        = azurerm_eventhub_authorization_rule.raw_reviews[0].primary_connection_string
   key_vault_id = azurerm_key_vault.main.id
 
   depends_on = [azurerm_role_assignment.current_user_kv_admin]
@@ -772,8 +799,11 @@ resource "azurerm_eventhub_namespace" "example" {
   sku                 = "Standard"
   capacity            = 1
 
-  # Enable SAS authentication for Fabric Eventstream
-  local_authentication_enabled = true
+  # dev: SAS enabled for local tooling; prod: RBAC-only (disable SAS/keys)
+  local_authentication_enabled = local.is_prod ? false : true
+
+  # dev: public access; prod: private endpoints only
+  public_network_access_enabled = local.is_prod ? false : true
 
   tags = local.common_tags
 }
@@ -795,8 +825,9 @@ resource "azurerm_eventhub" "raw_reviews" {
   message_retention = 3
 }
 
-# Create Event Hub Authorization Rule (SAS Policy with Send and Listen rights for simulation)
+# Create Event Hub Authorization Rule (SAS Policy — dev only, prod uses RBAC)
 resource "azurerm_eventhub_authorization_rule" "example" {
+  count               = local.is_prod ? 0 : 1
   name                = "ehpolicy${random_string.suffix.result}"
   namespace_name      = azurerm_eventhub_namespace.example.name
   eventhub_name       = azurerm_eventhub.example.name
@@ -806,8 +837,9 @@ resource "azurerm_eventhub_authorization_rule" "example" {
   manage              = false
 }
 
-# SAS policy for raw-reviews hub
+# SAS policy for raw-reviews hub (dev only)
 resource "azurerm_eventhub_authorization_rule" "raw_reviews" {
+  count               = local.is_prod ? 0 : 1
   name                = "ehpolicyraw${random_string.suffix.result}"
   namespace_name      = azurerm_eventhub_namespace.example.name
   eventhub_name       = azurerm_eventhub.raw_reviews.name
@@ -905,9 +937,21 @@ resource "azurerm_storage_account" "staging" {
   location                 = azurerm_resource_group.example.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
-  # Public access for SAS-based uploads from local machine
-  public_network_access_enabled = true
-  tags                          = local.common_tags
+
+  # dev: public access for local uploads; prod: locked down via network rules + PE
+  public_network_access_enabled = local.is_prod ? false : true
+
+  # In prod, deny all traffic except from the container app subnet (via service endpoint)
+  dynamic "network_rules" {
+    for_each = local.is_prod ? [1] : []
+    content {
+      default_action             = "Deny"
+      bypass                     = ["AzureServices"]
+      virtual_network_subnet_ids = [azurerm_subnet.containerapp[0].id]
+    }
+  }
+
+  tags = local.common_tags
 }
 
 resource "azurerm_storage_container" "postgres" {
@@ -1025,6 +1069,8 @@ resource "azurerm_postgresql_flexible_server" "example" {
   }
 
   # Enable Azure AD authentication (required for managed identity admin)
+  # password_auth_enabled stays true (required by provider for admin credentials)
+  # but prod containers use managed identity — password is not passed to them
   authentication {
     active_directory_auth_enabled = true
     password_auth_enabled         = true
@@ -1038,8 +1084,9 @@ resource "azurerm_postgresql_flexible_server" "example" {
   tags = local.common_tags
 }
 
-# Allow Azure services to access PostgreSQL (required for Fabric mirroring)
+# Allow Azure services to access PostgreSQL (dev only — prod uses VNET integration)
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure_services" {
+  count            = local.is_prod ? 0 : 1
   name             = "AllowAllAzureServicesAndResourcesWithinAzureIps"
   server_id        = azurerm_postgresql_flexible_server.example.id
   start_ip_address = "0.0.0.0"
@@ -1219,6 +1266,31 @@ resource "azurerm_private_endpoint" "acr" {
   depends_on = [azurerm_key_vault.main, azurerm_subnet_network_security_group_association.privateendpoints]
 }
 
+# Private Endpoint for Staging Storage Account (Blob)
+resource "azurerm_private_endpoint" "storage_blob" {
+  count               = local.is_prod ? 1 : 0
+  name                = "pe-storage-${random_string.suffix.result}"
+  location            = azurerm_resource_group.example.location
+  resource_group_name = azurerm_resource_group.example.name
+  subnet_id           = azurerm_subnet.privateendpoints[0].id
+
+  depends_on = [azurerm_subnet_network_security_group_association.privateendpoints]
+
+  private_service_connection {
+    name                           = "psc-storage-blob"
+    private_connection_resource_id = azurerm_storage_account.staging.id
+    is_manual_connection           = false
+    subresource_names              = ["blob"]
+  }
+
+  private_dns_zone_group {
+    name                 = "storage-blob-dns-zone-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.storage_blob[0].id]
+  }
+
+  tags = local.common_tags
+}
+
 # =============================================================================
 # PHASE 5: MANAGED IDENTITY AUTHENTICATION
 # =============================================================================
@@ -1309,11 +1381,15 @@ resource "azurerm_container_app_job" "importer" {
       }
       env {
         name  = "POSTGRES_USER"
-        value = azurerm_postgresql_flexible_server.example.administrator_login
+        value = local.is_prod ? "caj-importer-${random_string.suffix.result}" : azurerm_postgresql_flexible_server.example.administrator_login
       }
       env {
         name  = "POSTGRES_PASSWORD"
-        value = random_password.postgresql_admin.result
+        value = local.is_prod ? "" : random_password.postgresql_admin.result
+      }
+      env {
+        name  = "POSTGRES_AUTH_MODE"
+        value = local.is_prod ? "managed_identity" : "password"
       }
       env {
         name  = "COSMOSDB_ENDPOINT"
@@ -2066,10 +2142,10 @@ output "event_hub_namespace" {
   description = "The name of the Event Hub namespace"
 }
 
-# Event Hub Namespace Connection String
+# Event Hub Namespace Connection String (dev only — prod disables local auth)
 output "event_hub_namespace_conn_string" {
-  value       = azurerm_eventhub_namespace.example.default_primary_connection_string
-  description = "The primary connection string for the Event Hub namespace"
+  value       = local.is_prod ? null : azurerm_eventhub_namespace.example.default_primary_connection_string
+  description = "The primary connection string for the Event Hub namespace (null in prod)"
   sensitive   = true
 }
 
@@ -2091,23 +2167,23 @@ output "event_hub" {
   description = "The name of the Event Hub"
 }
 
-# Event Hub Policy Name
+# Event Hub Policy Name (dev only)
 output "event_hub_policy" {
-  value       = azurerm_eventhub_authorization_rule.example.name
-  description = "The name of the Event Hub authorization rule"
+  value       = local.is_prod ? null : azurerm_eventhub_authorization_rule.example[0].name
+  description = "The name of the Event Hub authorization rule (null in prod)"
 }
 
-# Event Hub Primary Key
+# Event Hub Primary Key (dev only)
 output "event_hub_primary_key" {
-  value       = azurerm_eventhub_authorization_rule.example.primary_key
-  description = "The primary key for the Event Hub authorization rule"
+  value       = local.is_prod ? null : azurerm_eventhub_authorization_rule.example[0].primary_key
+  description = "The primary key for the Event Hub authorization rule (null in prod)"
   sensitive   = true
 }
 
-# Event Hub Authorization Rule Connection String (with Send permissions)
+# Event Hub Authorization Rule Connection String (dev only)
 output "event_hub_connection_string" {
-  value       = azurerm_eventhub_authorization_rule.example.primary_connection_string
-  description = "The connection string for the Event Hub authorization rule with Send/Listen permissions"
+  value       = local.is_prod ? null : azurerm_eventhub_authorization_rule.example[0].primary_connection_string
+  description = "The connection string for the Event Hub authorization rule (null in prod)"
   sensitive   = true
 }
 
@@ -2117,10 +2193,10 @@ output "staging_storage_account_name" {
   description = "The name of the staging storage account"
 }
 
-# Staging Storage Account Connection String
+# Staging Storage Account Connection String (dev only — prod uses MI + PE)
 output "staging_storage_conn_string" {
-  value       = azurerm_storage_account.staging.primary_connection_string
-  description = "The primary connection string for the staging storage account"
+  value       = local.is_prod ? null : azurerm_storage_account.staging.primary_connection_string
+  description = "The primary connection string for the staging storage account (null in prod)"
   sensitive   = true
 }
 
@@ -2136,17 +2212,17 @@ output "cosmosdb_endpoint" {
   description = "The endpoint for the CosmosDB account"
 }
 
-# CosmosDB Primary Key
+# CosmosDB Primary Key (dev only — prod uses RBAC)
 output "cosmosdb_primary_key" {
-  value       = azurerm_cosmosdb_account.example.primary_key
-  description = "The primary key for the CosmosDB account"
+  value       = local.is_prod ? null : azurerm_cosmosdb_account.example.primary_key
+  description = "The primary key for the CosmosDB account (null in prod)"
   sensitive   = true
 }
 
-# CosmosDB Connection String
+# CosmosDB Connection String (dev only — prod uses RBAC)
 output "cosmosdb_connection_string" {
-  value       = azurerm_cosmosdb_account.example.primary_sql_connection_string
-  description = "The primary SQL connection string for the CosmosDB account"
+  value       = local.is_prod ? null : azurerm_cosmosdb_account.example.primary_sql_connection_string
+  description = "The primary SQL connection string for the CosmosDB account (null in prod)"
   sensitive   = true
 }
 
@@ -2174,10 +2250,10 @@ output "postgresql_admin_login" {
   description = "The administrator login for the PostgreSQL server"
 }
 
-# PostgreSQL Administrator Password
+# PostgreSQL Administrator Password (dev only — prod uses managed identity)
 output "postgresql_admin_password" {
-  value       = azurerm_postgresql_flexible_server.example.administrator_password
-  description = "The administrator password for the PostgreSQL server"
+  value       = local.is_prod ? null : azurerm_postgresql_flexible_server.example.administrator_password
+  description = "The administrator password for the PostgreSQL server (null in prod)"
   sensitive   = true
 }
 
@@ -2334,28 +2410,28 @@ resource "local_file" "env_file" {
     COSMOSDB_ACCOUNT_NAME=${azurerm_cosmosdb_account.example.name}
     COSMOSDB_ENDPOINT=${azurerm_cosmosdb_account.example.endpoint}
     COSMOSDB_DATABASE_NAME=${azurerm_cosmosdb_sql_database.example.name}
-    COSMOSDB_PRIMARY_KEY=${azurerm_cosmosdb_account.example.primary_key}
-    COSMOSDB_CONNECTION_STRING='${azurerm_cosmosdb_account.example.primary_sql_connection_string}'
+    COSMOSDB_PRIMARY_KEY=${local.is_prod ? "" : azurerm_cosmosdb_account.example.primary_key}
+    COSMOSDB_CONNECTION_STRING='${local.is_prod ? "" : azurerm_cosmosdb_account.example.primary_sql_connection_string}'
 
     POSTGRES_SERVER_NAME=${azurerm_postgresql_flexible_server.example.name}
     POSTGRES_FQDN=${azurerm_postgresql_flexible_server.example.fqdn}
     POSTGRES_DB_NAME=${azurerm_postgresql_flexible_server_database.example.name}
     POSTGRES_ADMIN_LOGIN=${azurerm_postgresql_flexible_server.example.administrator_login}
-    POSTGRES_ADMIN_PASSWORD='${azurerm_postgresql_flexible_server.example.administrator_password}'
+    POSTGRES_ADMIN_PASSWORD='${local.is_prod ? "" : azurerm_postgresql_flexible_server.example.administrator_password}'
 
     EVENTHUB_NAMESPACE=${azurerm_eventhub_namespace.example.name}
     EVENTHUB_NAME=${azurerm_eventhub.example.name}
     EVENTHUB_RAW_NAME=${azurerm_eventhub.raw_reviews.name}
     EVENTHUB_PROCESSED_NAME=${azurerm_eventhub.example.name}
-    EVENTHUB_POLICY_NAME=${azurerm_eventhub_authorization_rule.example.name}
-    EVENTHUB_CONNECTION_STRING='${azurerm_eventhub_authorization_rule.example.primary_connection_string}'
+    EVENTHUB_POLICY_NAME=${local.is_prod ? "" : azurerm_eventhub_authorization_rule.example[0].name}
+    EVENTHUB_CONNECTION_STRING='${local.is_prod ? "" : azurerm_eventhub_authorization_rule.example[0].primary_connection_string}'
 
     AZURE_OPENAI_ENDPOINT=${azurerm_cognitive_account.openai.endpoint}
     AZURE_OPENAI_DEPLOYMENT_GPT4O_MINI=${local.is_prod ? "gpt-4o-mini" : azurerm_cognitive_deployment.gpt4o_mini[0].name}
     AZURE_OPENAI_DEPLOYMENT_GPT52=${local.is_prod ? "gpt-5.2" : azurerm_cognitive_deployment.gpt52[0].name}
 
     STAGING_STORAGE_ACCOUNT=${azurerm_storage_account.staging.name}
-    STAGING_STORAGE_CONN_STRING='${azurerm_storage_account.staging.primary_connection_string}'
+    STAGING_STORAGE_CONN_STRING='${local.is_prod ? "" : azurerm_storage_account.staging.primary_connection_string}'
 
     FABRIC_WORKSPACE_ID=${local.is_prod ? "" : fabric_workspace.example[0].id}
     FABRIC_SQL_ENDPOINT=${var.fabric_sql_endpoint}

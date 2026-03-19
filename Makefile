@@ -197,6 +197,21 @@ delete-baseline: ## [core] Delete local resource groups (tag: tf=local) and purg
 	@echo ""
 	@echo "\033[0;32m✅ Local infrastructure deleted and purged!\033[0m"
 
+DUCKDB_FILES := local_postgres.duckdb local_cosmos.duckdb event_hubs.duckdb
+
+check-duckdb: ## [util] Verify DuckDB files exist (not directories)
+	@fail=0; \
+	for db in $(DUCKDB_FILES); do \
+		if [ -d "$$db" ]; then \
+			echo "❌ $$db is a directory (not a DuckDB file). Remove it and re-seed: rm -r $$db && make seed-local"; \
+			fail=1; \
+		elif [ ! -f "$$db" ]; then \
+			echo "❌ $$db not found. Run: make seed-local"; \
+			fail=1; \
+		fi; \
+	done; \
+	if [ $$fail -eq 1 ]; then exit 1; fi
+
 ##@ Data Seeding
 seed-local: ## [core] Seed local DuckDB databases (no Azure needed)
 	@echo ""
@@ -209,9 +224,7 @@ seed-local: ## [core] Seed local DuckDB databases (no Azure needed)
 
 clean-local: ## [util] Delete local DuckDB database files
 	@echo "🗑  Removing local DuckDB files..."
-	@rm -f local_postgres.duckdb local_postgres.duckdb.wal
-	@rm -f local_cosmos.duckdb local_cosmos.duckdb.wal
-	@rm -f event_hubs.duckdb event_hubs.duckdb.wal
+	@for db in $(DUCKDB_FILES); do rm -rf $$db $${db}.wal; done
 	@echo "✓ Local databases removed"
 
 
@@ -631,7 +644,7 @@ dashboard-dev: ## [util] Start dashboard Vite frontend only (port 5173)
 	@echo "🖥  Starting dashboard dev server..."
 	@cd dashboard && npm run dev
 
-dashboard-start: ## [core] Start API server + Vite frontend together
+dashboard-start: dashboard-install check-duckdb ## [core] Start API server + Vite frontend together
 	@echo "🚀 Starting dashboard (API + frontend)..."
 	@echo "   API:      http://localhost:3001"
 	@echo "   Frontend: http://localhost:5173"
@@ -660,7 +673,7 @@ dashboard-audit-fix: ## [util] Fix npm audit vulnerabilities
 agents-build: ## [core] Build agent Docker images
 	docker compose -f agents/docker-compose.yml build --no-cache
 
-agents-up: ## [core] Start agent services (detached)
+agents-up: check-duckdb ## [core] Start agent services (detached)
 	docker compose -f agents/docker-compose.yml up -d
 
 agents-down: ## [core] Stop agent services
@@ -763,7 +776,7 @@ test-reviews-local: ## [core] End-to-end local mode test: build → start → se
 	print(f'   Processed reviews: {done}'); \
 	rows = con.execute('SELECT id, sentiment_category, chatbot_statement FROM customer_reviews ORDER BY id LIMIT 5').fetchall() if 'customer_reviews' in tables and done > 0 else []; \
 	print(''); \
-	[print(f'   {r[0]} | {r[1]:10s} | {(r[2] or \"N/A\")[:55]}') for r in rows]"
+	[print(f'   {r[0]} | {(r[1] or \"N/A\"):10s} | {(r[2] or \"N/A\")[:55]}') for r in rows]"
 	@echo ""
 	@echo "⑧ Container still running — use 'make agent3-stop' when done."
 

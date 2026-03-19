@@ -45,7 +45,6 @@ services:
     env_file:
       - ../local.env
     environment:
-      - AGENT_MODEL=o3
       - AGENT_TEMPERATURE=0.3
       - LOCAL_POSTGRES_DB=/data/local_postgres.duckdb
       - LOCAL_COSMOS_DB=/data/local_cosmos.duckdb

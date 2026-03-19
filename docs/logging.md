@@ -12,6 +12,7 @@ This document describes the distributed tracing, metrics, and log correlation se
 - [Node.js Dashboard](#nodejs-dashboard)
 - [Infrastructure — Cloud](#infrastructure--cloud)
 - [Infrastructure — Local (Aspire)](#infrastructure--local-aspire)
+- [Using the Aspire Dashboard](#using-the-aspire-dashboard)
 - [Manual Spans](#manual-spans)
 - [Thread Context Propagation](#thread-context-propagation)
 - [Dependencies & Version Pin](#dependencies--version-pin)
@@ -195,6 +196,45 @@ environment:
 | `make aspire-up` | Start Aspire dashboard (OTEL trace viewer on http://localhost:18888) |
 | `make aspire-down` | Stop and remove Aspire dashboard container |
 | `make aspire-logs` | Tail Aspire dashboard logs |
+
+---
+
+## Using the Aspire Dashboard
+
+After starting the local stack (`make aspire-up` or `make agents-up`), open **http://localhost:18888** in a browser. The Aspire dashboard provides three panels for inspecting agent telemetry:
+
+### Traces
+
+The **Traces** page shows a filterable list of distributed traces. Each row represents a root span (typically an inbound HTTP request to an agent). Click a trace to open a **waterfall view** showing the full call tree:
+
+```
+POST /chat (agent1-explainer)          ← FastAPI auto-instrumented
+  ├─ mcp.tool.call  get_tab_summary    ← manual span from mcp_tools.py
+  ├─ mcp.tool.call  get_tab_drivers    ← parallel, nested under gather_data
+  ├─ mcp.tool.call  get_tab_extra      ← parallel, nested under gather_data
+  └─ HTTP POST openai.com/…            ← HTTPX auto-instrumented
+```
+
+Use the **Service** dropdown to filter by agent name (`agent1-explainer`, `agent2-narrative`, `agent3-sentiment`). The service names match the `OTEL_SERVICE_NAME` values defined in `agents/docker-compose.yml`.
+
+### Structured Logs
+
+The **Structured Logs** page displays log records emitted by the Python `logging` module, correlated with trace and span IDs via the OpenTelemetry logging instrumentation. Each log entry links back to its parent trace, making it easy to jump from a warning or error directly into the trace waterfall.
+
+Filter by **Severity** (Information, Warning, Error) or by **Service** to isolate logs from a specific agent.
+
+### Metrics
+
+The **Metrics** page shows time-series data from the `MeterProvider` configured in each agent. The periodic exporting metric reader pushes data every 60 seconds. Use this page to monitor request throughput, latency histograms, and custom counters.
+
+### Typical Debugging Workflow
+
+1. Run `make aspire-up` to start the Aspire container.
+2. Start agents locally or via `make agents-up`.
+3. Trigger a request (e.g., send a chat message from the dashboard).
+4. Open the **Traces** page, filter by the target agent service name.
+5. Click the trace to inspect the waterfall — check span durations, attributes (`mcp.tool.name`, `db.system`), and any error status codes.
+6. If a span shows an error, switch to **Structured Logs** and filter by the same trace ID to find the associated log entry.
 
 ---
 

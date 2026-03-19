@@ -525,3 +525,68 @@ Constraints:
 - Use markdown tables for structured listings and ASCII art for the architecture diagram
 - Cross-reference infra/cloud/main.tf for Terraform resources and agents/docker-compose.yml for local setup
 """
+
+[architecture-drawio]
+prompt = """
+Generate docs/architecture/cloud-architecture.drawio — a draw.io XML file that visualises every Azure resource provisioned by infra/cloud/main.tf as an architecture diagram. Parse the Terraform file to extract all resources, variables, locals, subnets, NSGs, private endpoints, DNS zones, role assignments, and diagnostic settings. The diagram must stay in sync with the Terraform; do not invent resources that are not in main.tf.
+
+Source of truth: infra/cloud/main.tf (read the entire file before generating).
+
+Security: Use `{suffix}` as a placeholder wherever `random_string.suffix.result` appears in resource names. Never embed real subscription IDs, tenant IDs, object IDs, UPNs, connection strings, keys, or passwords.
+
+Layout (top to bottom, left to right):
+
+1. **Resource Group boundary** — outermost rounded rectangle labelled `rg-fabric-{suffix}`, WestUS3.
+
+2. **Users / Internet** — icon at the top, connected via HTTPS to the Dashboard.
+
+3. **Virtual Network boundary** (dashed, labelled `10.0.0.0/16 — prod only`) containing five subnet boxes:
+   - **snet-containerapp 10.0.0.0/23** (NSG: nsg-containerapp) → holds the Container App Environment (`cae-retailchat-{suffix}`) which contains:
+     - Dashboard container app (external ingress, port 3001, System MI)
+     - Agent 1 — Explainer (internal ingress, port 8001, gpt-4o-mini, System MI)
+     - Agent 2 — Narrative (internal ingress, port 8002, gpt-4o-mini + gpt-5.2, System MI)
+     - Agent 3 — Sentiment (internal ingress, port 8003, gpt-4o-mini, System MI)
+     - Importer Job (manual trigger, 2 CPU / 4 GiB, System MI)
+     - Monitoring bar: Log Analytics Workspace + Application Insights
+   - **snet-postgresql 10.0.2.0/24** (NSG: nsg-postgresql) → PostgreSQL Flexible Server (v16, GP_Standard_D2s_v3, 32 GB, AD Auth + Password dev, System MI, DB name)
+   - **snet-privateendpoints 10.0.3.0/24** (NSG: nsg-privateendpoints) → Cosmos DB (SQL API, Session consistency, Continuous 7-day backup, DB name), Event Hub Namespace (Standard, two hubs: processed-reviews + raw-reviews, 4 partitions each), Azure OpenAI (S0, gpt-4o-mini + gpt-5.2 deployments with capacities), Staging Storage Account (Standard LRS, 3 containers)
+   - **snet-keyvault-pe 10.0.4.0/28** (NSG: nsg-keyvault) → Key Vault (RBAC auth, purge protection, soft delete 7 days, list stored secret names)
+   - **snet-management 10.0.5.0/24** (reserved, italic)
+
+4. **Outside-VNET panel** (right column, close to the VNET boundary — no large gap):
+   - Azure Container Registry (Basic dev / Premium prod, admin disabled, MI auth)
+   - Microsoft Fabric box (dev only): Fabric Capacity (F8) → Fabric Workspace
+   - Private DNS Zones list (prod only, 8 zones)
+   - Private Endpoints list (prod only, 6 endpoints)
+   - RBAC Assignments legend (all MI role assignments from the Terraform)
+   - Diagnostic Settings legend (which services → Log Analytics, with log categories)
+
+5. **Environment Toggle legend** — top-right box: dev vs prod differences.
+
+Connections / data-flow edges:
+- Users → Dashboard (HTTPS, solid blue)
+- Dashboard → each Agent (REST, dashed grey)
+- All 3 Agents → Azure OpenAI (solid green)
+- Agent 3 ↔ Event Hub (receive raw / send processed, solid orange)
+- Importer → PostgreSQL, CosmosDB, Event Hub, Storage (solid/dashed)
+- Container App Environment → ACR (AcrPull MI, dashed purple)
+- Container App Environment → Application Insights (OTLP telemetry, dashed gold)
+- Dashboard → Fabric Workspace (Fabric SQL mirrored data, solid red)
+- Application Insights → Log Analytics Workspace
+- Fabric Capacity → Fabric Workspace
+
+Style guidelines:
+- Use draw.io mxGraph XML format (`<mxfile>` root)
+- Azure-branded colours: #0078D4 (Azure blue), #336791 (PostgreSQL), #107C10 (OpenAI green), #F25022 (Fabric red), #FFD700 (Key Vault gold)
+- Subnet boxes use green fill (#D5E8D4), VNET uses light blue dashed (#DAE8FC)
+- Include XML comments separating each section for maintainability
+- Use orthogonal edge routing
+- Canvas should be compact — no excessive whitespace between VNET content and the right-side panels
+
+Constraints:
+- Every resource, subnet, NSG, private endpoint, DNS zone, role assignment, and diagnostic setting that exists in main.tf MUST appear in the diagram
+- Do not add resources that are not in main.tf
+- All resource names must use the `{suffix}` placeholder pattern
+- Verify subnet CIDRs, NSG names, port numbers, SKUs, partition counts, and role names against the Terraform source
+- The diagram is the single visual companion to main.tf — if the Terraform changes, regenerate this diagram using the same prompt
+"""

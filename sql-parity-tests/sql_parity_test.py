@@ -5,7 +5,7 @@ to the original Postgres/DuckDB queries.
 
 Usage:
     make sql-parity-test          # runs end-to-end
-    python tests/sql_parity_test.py  # manual (assumes sql-edge is running + loaded)
+    python sql-parity-tests/sql_parity_test.py  # manual (assumes sql-edge is running + loaded)
 
 Steps:
   1. Connect to DuckDB (local_postgres.duckdb, event_hubs.duckdb)
@@ -639,7 +639,7 @@ def run_parity_test() -> bool:
         print(f"  Connected to {MSSQL_HOST}:{MSSQL_PORT}/{MSSQL_DATABASE}")
     except Exception as e:
         print(f"  FATAL: Cannot connect to MSSQL: {e}")
-        print("  Is azure-sql-edge running? Try: docker compose -f tests/docker-compose-sqlserver.yml up -d")
+        print("  Is azure-sql-edge running? Try: docker compose -f sql-parity-tests/docker-compose-sqlserver.yml up -d")
         return False
 
     # Step 3: Export tables

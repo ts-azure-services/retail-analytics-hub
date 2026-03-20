@@ -1459,11 +1459,11 @@ sql-parity-test: ## [core] Run SQL parity test (Postgres/DuckDB vs MSSQL via azu
 		sleep 3; \
 	fi
 	@echo "Starting azure-sql-edge..."
-	docker compose -f tests/docker-compose-sqlserver.yml up -d --wait
+	docker compose -f sql-parity-tests/docker-compose-sqlserver.yml up -d --wait
 	@echo "Running parity test..."
-	uv run tests/sql_parity_test.py
+	uv run sql-parity-tests/sql_parity_test.py
 	@echo "Stopping azure-sql-edge..."
-	docker compose -f tests/docker-compose-sqlserver.yml down
+	docker compose -f sql-parity-tests/docker-compose-sqlserver.yml down
 
 
 

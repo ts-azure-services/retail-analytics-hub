@@ -1,9 +1,9 @@
 # azure-sql-edge for SQL parity testing (Postgres/DuckDB vs MSSQL)
 #
 # Usage:
-#   docker compose -f tests/docker-compose-sqlserver.yml up -d
-#   python tests/sql_parity_test.py
-#   docker compose -f tests/docker-compose-sqlserver.yml down
+#   docker compose -f sql-parity-tests/docker-compose-sqlserver.yml up -d
+#   python sql-parity-tests/sql_parity_test.py
+#   docker compose -f sql-parity-tests/docker-compose-sqlserver.yml down
 
 services:
   sqlserver:
